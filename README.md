@@ -97,24 +97,24 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Client["클라이언트 계층 (재웅)"]
+    subgraph Client["클라이언트 계층"]
         CLI["CLI Wrapper<br/>(su-scan / pip 래퍼)"]
         PROXY["Index 프록시<br/>(PIP_INDEX_URL 지정)"]
         DASH["SBOM 대시보드<br/>(결과 시각화)"]
     end
 
-    subgraph API["API 계층 · FastAPI (재웅)"]
+    subgraph API["API 계층 · FastAPI"]
         EP["/api/v1/scan<br/>통합 스캔 엔드포인트"]
         AGG["결과 통합 · 응답 스키마"]
     end
 
-    subgraph Engine["탐지 엔진 계층 (민규)"]
+    subgraph Engine["탐지 엔진 계층"]
         CVE["CVE/OSV 매처"]
         STATIC["정적분석기<br/>(Bandit + 커스텀 규칙)"]
         VERDICT["종합 판정 로직<br/>(+ CWE 태깅)"]
     end
 
-    subgraph Data["데이터·스코어링 계층 (승준)"]
+    subgraph Data["데이터·스코어링 계층"]
         META["PyPI 메타데이터 수집기"]
         SCORE["위험도 스코어러<br/>(규칙 기반 가중치)"]
     end
@@ -171,7 +171,7 @@ sequenceDiagram
     C-->>U: ✅ 허용 / ⛔ 차단 + 상세 리포트
 ```
 
-### 정적분석 세부 (민규)
+### 정적분석 세부
 
 ```mermaid
 flowchart TB
@@ -243,7 +243,7 @@ erDiagram
     }
 ```
 
-### 위험도 스코어링 규칙 (초안 · 승준)
+### 위험도 스코어링 규칙 (초안)
 
 | 위험 신호 | 판단 근거 | 가중치(예시) |
 |---|---|:---:|
@@ -311,17 +311,19 @@ erDiagram
 
 ## 👥 팀 & 역할 분담
 
-| 파트 | 담당 | 주요 작업 |
-|---|---|---|
-| 🛡 보안 코어 엔진 | **민규** | CVE/OSV 매칭, 정적분석기(Bandit+커스텀 규칙), 종합 판정, CWE 매핑 |
-| 📊 데이터·스코어링 | **승준** | PyPI 메타데이터 수집, 위험 신호 정의, 규칙 기반 위험도 스코어러 |
-| 🔧 API·클라이언트 | **재웅** | FastAPI 통합, CLI/프록시, SBOM 대시보드, Docker·배포 |
+> 3인 팀. 아래는 파트 단위 구분이며, 세부 태스크 배분은 진행하며 조정합니다.
+
+| 파트 | 주요 작업 |
+|---|---|
+| 🛡 보안 코어 엔진 | CVE/OSV 매칭, 정적분석기(Bandit+커스텀 규칙), 종합 판정, CWE 매핑 |
+| 📊 데이터·스코어링 | PyPI 메타데이터 수집, 위험 신호 정의, 규칙 기반 위험도 스코어러 |
+| 🔧 API·클라이언트 | FastAPI 통합, CLI/프록시, SBOM 대시보드, Docker·배포 |
 
 ```mermaid
 flowchart LR
-    M["민규<br/>탐지 엔진"] --> API
-    S["승준<br/>스코어러"] --> API
-    API["재웅<br/>API 통합"] --> UI["재웅<br/>CLI · 대시보드"]
+    ENGINE["탐지 엔진"] --> API
+    SCORE["스코어러"] --> API
+    API["API 통합"] --> UI["CLI · 대시보드"]
 ```
 
 ---
@@ -343,9 +345,9 @@ flowchart LR
 - [ ] API 응답 스키마 1차 합의
 
 ### Phase 1 — 코어 기능 (병렬)
-- [ ] **민규**: OSV/NVD 연동 + 정적분석기(Bandit 연동 → 커스텀 규칙)
-- [ ] **승준**: PyPI 메타데이터 수집 + 규칙 기반 스코어러
-- [ ] **재웅**: FastAPI 뼈대 + `/scan` 엔드포인트 + pip 프록시 PoC
+- [ ] **탐지 엔진**: OSV/NVD 연동 + 정적분석기(Bandit 연동 → 커스텀 규칙)
+- [ ] **데이터·스코어링**: PyPI 메타데이터 수집 + 규칙 기반 스코어러
+- [ ] **API·클라이언트**: FastAPI 뼈대 + `/scan` 엔드포인트 + pip 프록시 PoC
 
 ### Phase 2 — 통합
 - [ ] 세 모듈을 `/scan` 응답 하나로 통합
@@ -376,26 +378,26 @@ Supply-Unchained/
 ├── .env.example            # 키/URL 템플릿 (실제 .env는 커밋 금지)
 ├── docker-compose.yml
 │
-├── api/                    # 재웅 — FastAPI
+├── api/                    # FastAPI
 │   ├── main.py
 │   ├── routers/scan.py
 │   └── schemas.py          # Pydantic 응답 스키마
 │
-├── engine/                 # 민규 — 탐지 엔진
+├── engine/                 # 탐지 엔진
 │   ├── cve_matcher.py      # OSV/NVD 연동
 │   ├── static_analyzer.py  # AST + Bandit + 커스텀 규칙
 │   ├── rules/              # .pth / install-hook 커스텀 규칙
 │   └── verdict.py          # 종합 판정 + CWE 태깅
 │
-├── scoring/                # 승준 — 데이터·스코어링
+├── scoring/                # 데이터·스코어링
 │   ├── collector.py        # PyPI 메타데이터 수집
 │   ├── features.py         # 위험 신호 추출
 │   └── scorer.py           # 규칙 기반 가중치 스코어링
 │
-├── cli/                    # 재웅 — CLI / 프록시
+├── cli/                    # CLI / 프록시
 │   └── su_scan.py
 │
-├── dashboard/              # 재웅 — SBOM 시각화 (프론트)
+├── dashboard/              # SBOM 시각화 (프론트)
 │
 ├── samples/                # 테스트용 악성 패턴 샘플
 │   ├── sample1_setup.py    # os.system
