@@ -10,7 +10,7 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 
 `Static Analysis` · `CVE/OSV` · `Risk Scoring` · `FastAPI` · `Python`
 
-> ⚠️ **현재 문서는 기획 단계 설계안입니다.** 세부 스키마·엔드포인트·규칙셋은 개발 진행에 따라 변경될 수 있습니다.
+> ⚠️ **Phase 1 진행 중입니다.** API 스키마와 mock 데모는 동작하며, 엔진·스코어러는 각 파트가 구현 중입니다. 세부 스키마·규칙셋은 팀 합의에 따라 변경될 수 있습니다.
 
 </div>
 
@@ -24,7 +24,7 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 4. [시스템 아키텍처](#-시스템-아키텍처)
 5. [탐지 파이프라인](#-탐지-파이프라인)
 6. [데이터 설계](#-데이터-설계)
-7. [API 설계 (초안)](#-api-설계-초안)
+7. [API 설계](#-api-설계)
 8. [기술 스택](#-기술-스택)
 9. [팀 & 역할 분담](#-팀--역할-분담)
 10. [개발 로드맵](#-개발-로드맵)
@@ -257,39 +257,118 @@ erDiagram
 
 ---
 
-## 🔌 API 설계 (초안)
+## 🔌 API 설계
 
-> 기획 단계 초안입니다. 필드·경로는 개발하며 확정합니다.
+> **세 파트가 만나는 계약(contract) 지점.** `api/schemas.py`가 소스 오브 트루스이며,
+> 스키마 변경은 반드시 팀 합의 후 진행합니다.
+> 현재 엔진·스코어러는 mock으로 동작하며, 각 파트가 자기 모듈로 교체합니다.
 
-**`POST /api/v1/scan`**
+### 엔드포인트
+
+| Method | Path | 설명 |
+|---|---|---|
+| `POST` | `/api/v1/scan` | 패키지 통합 스캔 (3개 레이어 결과 통합) |
+| `GET` | `/health` | 헬스체크 |
+| `GET` | `/docs` | Swagger UI — 스키마 확인·테스트용 |
+
+### Request
 
 ```jsonc
-// Request
 {
-  "ecosystem": "pip",        // 확장 대비 필드 (현재 pip만)
-  "name": "requests",
-  "version": "2.31.0"
+  "ecosystem": "pip",      // Enum: pip (npm/cargo는 Future Work)
+  "name": "requests",      // 1~214자
+  "version": "2.31.0"      // 정확한 버전 문자열
 }
 ```
 
+### Response
+
 ```jsonc
-// Response
 {
-  "verdict": "warn",         // safe | warn | block
-  "risk_score": 62,
+  // ── 식별 정보 (DB SCAN_RESULT와 대응, 대시보드 재조회용)
+  "scan_id": 1,
+  "ecosystem": "pip",
+  "name": "reqeusts",
+  "version": "1.0.0",
+  "scanned_at": "2026-07-22T13:00:00Z",
+
+  // ── 종합 판정
+  "verdict": "block",              // Enum: safe | warn | block
+  "risk_score": 90,                // 0~100
+  "verdict_reasons": [             // CLI가 그대로 출력 가능한 문장 목록
+    "정적분석에서 고위험 악성 패턴 탐지",
+    "메타데이터 위험도 스코어 90점 (임계 70 이상)"
+  ],
+
+  // ── ① CVE/OSV 매칭 레이어 (탐지 엔진)
   "vulnerabilities": [
-    { "source": "OSV", "id": "GHSA-xxxx", "severity": "high" }
+    {
+      "source": "OSV",             // Enum: OSV | NVD
+      "id": "GHSA-9wx4-h78v-vm56",
+      "severity": "medium",        // Enum: low | medium | high | critical
+      "summary": "취약점 한 줄 요약",
+      "fixed_version": "2.31.1"    // 업그레이드 안내용
+    }
   ],
+
+  // ── ② 정적분석 레이어 (탐지 엔진)
   "static_findings": [
-    { "rule": "custom-pth", "cwe": "CWE-94", "severity": "high", "location": "install.pth:1" }
+    {
+      "rule": "custom-pth",        // Bandit 규칙 ID 또는 커스텀 규칙 ID
+      "cwe": "CWE-94",
+      "severity": "high",
+      "location": "install.pth:1", // 파일:라인
+      "detail": "탐지된 패턴 설명"
+    }
   ],
+
+  // ── ③ 위험도 스코어링 레이어 (데이터·스코어링)
   "risk_signals": {
-    "is_new_account": true,
-    "typosquat_score": 0.82,
-    "has_install_script": true
+    "is_new_account": true,        // 배포 직전 생성된 관리자 계정
+    "typosquat_score": 0.82,       // 0.0~1.0 이름 유사도
+    "has_install_script": true,    // 설치 시 실행 코드 포함
+    "dependency_count": 0,
+    "release_burst": true          // 비정상 배포 패턴
   }
 }
 ```
+
+### 판정 규칙 (초안 · 팀 합의 대상)
+
+```mermaid
+flowchart TB
+    IN["스캔 결과"] --> C1{"정적분석 HIGH 이상<br/>또는 risk_score ≥ 70"}
+    C1 -->|"Yes"| BLOCK["⛔ block"]
+    C1 -->|"No"| C2{"알려진 취약점 존재<br/>또는 risk_score ≥ 40"}
+    C2 -->|"Yes"| WARN["⚠️ warn"]
+    C2 -->|"No"| SAFE["✅ safe"]
+```
+
+| 조건 | verdict |
+|---|---|
+| 정적분석 `high`/`critical` 탐지 **또는** `risk_score ≥ 70` | `block` |
+| 알려진 취약점 존재 **또는** `risk_score ≥ 40` | `warn` |
+| 그 외 | `safe` |
+
+> 임계값(70 / 40)은 검증용 샘플로 튜닝 예정.
+
+### 에러 응답
+
+```jsonc
+{ "error": "package_not_found", "detail": "..." }
+```
+404(패키지 없음) / 502(외부 API 실패) 등에 공통 사용.
+
+### mock → 실제 모듈 교체 지점
+
+각 파트는 `api/routers/scan.py`의 mock 함수를 자기 모듈 호출로 바꾸면 통합 완료:
+
+| mock 함수 | 교체 대상 | 담당 |
+|---|---|---|
+| `_mock_cve_layer` | `engine.cve_matcher` | 탐지 엔진 |
+| `_mock_static_layer` | `engine.static_analyzer` | 탐지 엔진 |
+| `_mock_risk_layer` | `scoring.scorer` | 데이터·스코어링 |
+| `_decide` | 종합 판정 로직 (엔진으로 이전 검토) | 탐지 엔진 |
 
 ---
 
@@ -297,15 +376,16 @@ erDiagram
 
 | 영역 | 기술 |
 |---|---|
-| 언어 | Python 3.11+ |
-| API | FastAPI + Pydantic |
-| 정적분석 | `ast` (표준 라이브러리) · Bandit · (검토) Semgrep |
-| 취약점 소스 | OSV.dev API · NVD (CVE) |
+| 언어 | **Python 3.12** (전원 통일) |
+| 패키지·의존성 | **uv** (`uv.lock` 커밋 필수) |
+| API | FastAPI + Pydantic v2 |
+| 정적분석 | `ast` (표준 라이브러리) · **Bandit** (라이브러리 import) + 커스텀 규칙 |
+| 취약점 소스 | **OSV.dev API** (CVE 포함) — NVD는 추후 보강 |
 | 메타데이터 | PyPI JSON API |
-| DB | SQLite (MVP) → PostgreSQL (확장 시) |
+| DB | SQLite (MVP) → PostgreSQL (확장 시) · **스캔 이력 저장용** |
 | HTTP 클라이언트 | httpx (async) |
 | CLI | Typer / Click |
-| 컨테이너 | Docker · docker-compose |
+| 컨테이너 | Docker (`python:3.12-slim`) · docker-compose |
 
 ---
 
@@ -331,18 +411,40 @@ flowchart LR
 ## 🗺 개발 로드맵
 
 ```mermaid
-flowchart LR
-    P0["Phase 0<br/>기획·세팅"] --> P1["Phase 1<br/>코어 기능"]
-    P1 --> P2["Phase 2<br/>통합"]
-    P2 --> P3["Phase 3<br/>다듬기·발표"]
+gantt
+    title Supply-Unchained 개발 일정
+    dateFormat YYYY-MM-DD
+    axisFormat %m/%d
+
+    section Phase 0 기획·세팅
+    기획·레포·세팅        :done, p0, 2026-07-16, 2026-07-22
+    API 스키마 합의       :active, sch, 2026-07-22, 1d
+
+    section Phase 1 코어 (병렬)
+    엔진 OSV+정적분석     :e1, 2026-07-22, 14d
+    스코어러 수집+가중치   :s1, 2026-07-22, 14d
+    API+프록시 PoC        :a1, 2026-07-22, 14d
+    중간 점검             :milestone, mid, 2026-07-29, 0d
+
+    section Phase 2 통합
+    모듈 통합·E2E         :int, 2026-08-05, 7d
+    대시보드 연동         :dash, 2026-08-08, 4d
+    샘플 탐지 검증        :test, 2026-08-12, 3d
+
+    section Phase 3 다듬기·발표
+    실 패키지 데모        :demo, 2026-08-15, 5d
+    발표자료·리허설       :pt, 2026-08-20, 5d
+    문서·라이선스 정리    :doc, 2026-08-20, 4d
+    제출 마감            :milestone, ddl, 2026-08-27, 0d
 ```
 
 ### Phase 0 — 기획 & 초기 세팅 ✅ 진행 중
 - [x] 프로젝트 방향·스코프 확정
 - [x] 레포 생성 · 팀원 초대
-- [ ] 레포 구조 스캐폴딩 (아래 구조)
-- [ ] 개발환경 통일 (Python 버전, 의존성 관리, pre-commit)
-- [ ] API 응답 스키마 1차 합의
+- [x] 개발환경 통일 (Python 3.12 · uv · Docker slim)
+- [x] API 스키마 초안 + mock 데모 구현
+- [x] 레포 구조 스캐폴딩 (`api/` 패키지) · `.gitignore` 정비
+- [ ] **API 스키마 팀 합의 확정** (Week 0 회의)
 
 ### Phase 1 — 코어 기능 (병렬)
 - [ ] **탐지 엔진**: OSV/NVD 연동 + 정적분석기(Bandit 연동 → 커스텀 규칙)
@@ -365,9 +467,9 @@ flowchart LR
 
 ## ⚙️ 초기 세팅 가이드
 
-> 아직 코드 스캐폴딩 전입니다. 아래는 **합의용 제안 구조**입니다.
+> `api/`는 구현되어 실행 가능합니다. 나머지 디렉토리는 각 파트가 Phase 1에서 채워 나갑니다.
 
-### 제안 레포 구조
+### 레포 구조
 
 ```
 Supply-Unchained/
@@ -379,9 +481,10 @@ Supply-Unchained/
 ├── docker-compose.yml
 │
 ├── api/                    # FastAPI
-│   ├── main.py
-│   ├── routers/scan.py
-│   └── schemas.py          # Pydantic 응답 스키마
+│   ├── main.py             # 앱 진입점 (/health, /docs)
+│   ├── schemas.py          # ⭐ 세 파트 공통 계약 (변경 시 팀 합의)
+│   └── routers/
+│       └── scan.py         # POST /api/v1/scan + 종합 판정
 │
 ├── engine/                 # 탐지 엔진
 │   ├── cve_matcher.py      # OSV/NVD 연동
@@ -413,28 +516,50 @@ Supply-Unchained/
 ### 개발 환경 준비 (예정)
 
 ```bash
+# 0. uv 설치 (최초 1회)
+curl -LsSf https://astral.sh/uv/install.sh | sh          # macOS / Linux
+# Windows: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
 # 1. 클론
 git clone https://github.com/<org>/Supply-Unchained.git
 cd Supply-Unchained
 
-# 2. 가상환경
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+# 2. 환경 복원 (uv.lock 기준으로 전원 동일 환경)
+uv sync
 
-# 3. 의존성 (pyproject 확정 후)
-pip install -e ".[dev]"
+# 3. 환경변수
+cp .env.example .env
 
-# 4. 환경변수
-cp .env.example .env             # OSV/NVD 등 설정 채우기
-
-# 5. 로컬 실행
-uvicorn api.main:app --reload
+# 4. 로컬 실행
+uv run uvicorn api.main:app --reload
+# → http://localhost:8000/docs 에서 스키마 확인·테스트
 ```
 
-### 그라운드 룰 (제안)
-- 브랜치: `main`(보호) ← `feat/<파트>-<기능>` PR
-- 커밋: 각자 파트 디렉토리 위주로 작업 → 충돌 최소화
-- `.env`·실제 키·데이터 덤프는 **절대 커밋 금지** (`.gitignore` 등록)
+**의존성 추가할 때**
+```bash
+uv add httpx bandit          # 런타임
+uv add --dev pytest ruff     # 개발용
+```
+
+| 파일 | Git |
+|---|:---:|
+| `pyproject.toml` · `uv.lock` · `.python-version` | ✅ 커밋 |
+| `.env` · `.venv/` | ❌ **절대 금지** |
+
+### 그라운드 룰
+
+| 항목 | 규칙 |
+|---|---|
+| Python | **3.12** 전원 통일 |
+| 의존성 | **uv** — `pip install` 직접 사용 금지 |
+| Docker | `python:3.12-slim` (alpine 금지 — 데이터 라이브러리 빌드 이슈) |
+| 코드·주석·변수명·커밋 메시지 | **영어** (public 전환 대비) |
+| README·발표자료 | 한글 (수상 시 영문화) |
+| 브랜치 | `main`(보호) ← `feat/<파트>-<기능>` PR |
+| 커밋 prefix | `feat:` `fix:` `docs:` `refactor:` `test:` |
+| 커밋 금지 | `.env` · `.venv/` · 실제 키 · 데이터 덤프 |
+| 작업 범위 | 각자 파트 디렉토리 위주 → 충돌 최소화 |
+| 스키마 변경 | `api/schemas.py`는 **팀 합의 후** 변경 |
 
 ---
 
