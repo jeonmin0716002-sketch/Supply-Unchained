@@ -1,0 +1,24 @@
+# 환경 변수 · 시크릿 (그라운드 룰: 절대 커밋 금지)
+.env
+
+# 가상환경
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 도구 설정
+.claude/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
