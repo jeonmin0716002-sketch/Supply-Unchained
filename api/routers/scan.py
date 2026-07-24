@@ -23,6 +23,7 @@ from api.schemas import (
     Vulnerability,
     VulnSource,
 )
+from scoring.scorer import score_package  # layer 3: real risk scorer (data track)
 
 router = APIRouter(prefix="/api/v1", tags=["scan"])
 
@@ -77,6 +78,11 @@ def _mock_static_layer(req: ScanRequest) -> list[StaticFinding]:
 
 
 def _mock_risk_layer(req: ScanRequest) -> tuple[RiskSignals, int]:
+    """Deprecated: superseded by ``scoring.scorer.score_package``.
+
+    Kept only as an offline fallback for demos with no network. The live
+    endpoint now calls the real scorer (see ``scan_package`` below).
+    """
     if req.name in _DEMO_MALICIOUS:
         signals = RiskSignals(
             is_new_account=True,
@@ -138,8 +144,8 @@ async def scan_package(req: ScanRequest) -> ScanResponse:
     vulns = _mock_cve_layer(req)
     # ② 정적분석
     findings = _mock_static_layer(req)
-    # ③ 위험도 스코어링
-    signals, risk_score = _mock_risk_layer(req)
+    # ③ 위험도 스코어링 (real scoring layer — fetches PyPI metadata)
+    signals, risk_score = await score_package(req)
     # 종합 판정
     verdict, reasons = _decide(vulns, findings, risk_score)
 
