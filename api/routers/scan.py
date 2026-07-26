@@ -1,19 +1,28 @@
 """
-POST /api/v1/scan — 통합 스캔 엔드포인트 (데모)
+POST /api/v1/scan — 통합 스캔 엔드포인트
 
-실제 엔진/스코어러가 아직 없으므로 목(mock) 데이터로 응답 흐름을 시뮬레이션.
-각 파트는 아래 _mock_* 함수를 자기 모듈 호출로 교체하면 됨:
-  _mock_cve_layer     → engine.cve_matcher
-  _mock_static_layer  → engine.static_analyzer
-  _mock_risk_layer    → scoring.scorer
+세 레이어가 전부 실제 모듈로 연결되어 있습니다:
+  ① CVE/OSV 매칭   → engine.cve_matcher.match_package
+  ② 정적분석       → engine.static_analyzer.analyze_package
+  ③ 위험도 스코어링 → scoring.scorer.score_package
+
+PyPI 조회·아카이브 다운로드는 요청당 한 번만 일어납니다. `PackageContext`를
+여기서 만들어 ②③에 넘기기 때문입니다 (레이어마다 따로 받으면 같은 sdist를
+두 번 내려받게 됩니다).
+
+`SU_OFFLINE_DEMO=1` 이면 네트워크 없이 mock 데이터로 동작합니다. 발표장 회선이
+죽어도 데모가 되게 하려는 용도이며, 응답의 verdict_reasons에 mock임이 명시됩니다.
 """
 
-from datetime import datetime, timezone
+import os
+from datetime import UTC, datetime
 from itertools import count
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from api.schemas import (
+    ErrorResponse,
     RiskSignals,
     ScanRequest,
     ScanResponse,
@@ -23,7 +32,10 @@ from api.schemas import (
     Vulnerability,
     VulnSource,
 )
-from scoring.scorer import score_package  # layer 3: real risk scorer (data track)
+from common.pypi import PackageContext, PyPIError
+from engine.cve_matcher import CveLookupError, match_package
+from engine.static_analyzer import analyze_package
+from scoring.scorer import score_package
 
 router = APIRouter(prefix="/api/v1", tags=["scan"])
 
@@ -37,12 +49,15 @@ _SEVERITY_ORDER = {
 
 _scan_id_seq = count(1)
 
-# 데모용 시나리오: 패키지 이름에 따라 3가지 판정을 재현
+_OFFLINE_DEMO = os.getenv("SU_OFFLINE_DEMO", "").strip().lower() in {"1", "true", "yes"}
+
+# 오프라인 데모용 시나리오: 패키지 이름에 따라 3가지 판정을 재현
 _DEMO_MALICIOUS = {"reqeusts", "colourama", "python-sqlite"}   # typosquat 흉내
 _DEMO_VULNERABLE = {"requests"}                                 # 알려진 CVE 보유 흉내
 
 
 def _mock_cve_layer(req: ScanRequest) -> list[Vulnerability]:
+    """오프라인 데모 전용. 실제 경로는 engine.cve_matcher.match_package."""
     if req.name in _DEMO_VULNERABLE:
         return [
             Vulnerability(
@@ -57,6 +72,7 @@ def _mock_cve_layer(req: ScanRequest) -> list[Vulnerability]:
 
 
 def _mock_static_layer(req: ScanRequest) -> list[StaticFinding]:
+    """오프라인 데모 전용. 실제 경로는 engine.static_analyzer.analyze_package."""
     if req.name in _DEMO_MALICIOUS:
         return [
             StaticFinding(
@@ -67,8 +83,8 @@ def _mock_static_layer(req: ScanRequest) -> list[StaticFinding]:
                 detail=".pth 파일을 통한 인터프리터 시작 시 자동 실행 코드",
             ),
             StaticFinding(
-                rule="B102",
-                cwe="CWE-78",
+                rule="custom-obfuscated-payload",
+                cwe="CWE-506",
                 severity=Severity.HIGH,
                 location="setup.py:14",
                 detail="base64 디코딩 후 exec() 호출 패턴",
@@ -78,11 +94,7 @@ def _mock_static_layer(req: ScanRequest) -> list[StaticFinding]:
 
 
 def _mock_risk_layer(req: ScanRequest) -> tuple[RiskSignals, int]:
-    """Deprecated: superseded by ``scoring.scorer.score_package``.
-
-    Kept only as an offline fallback for demos with no network. The live
-    endpoint now calls the real scorer (see ``scan_package`` below).
-    """
+    """오프라인 데모 전용. 실제 경로는 scoring.scorer.score_package."""
     if req.name in _DEMO_MALICIOUS:
         signals = RiskSignals(
             is_new_account=True,
@@ -138,23 +150,64 @@ def _decide(
     return Verdict.SAFE, reasons
 
 
-@router.post("/scan", response_model=ScanResponse, summary="패키지 통합 스캔")
-async def scan_package(req: ScanRequest) -> ScanResponse:
-    # ① CVE/OSV 매칭
-    vulns = _mock_cve_layer(req)
-    # ② 정적분석
-    findings = _mock_static_layer(req)
-    # ③ 위험도 스코어링 (real scoring layer — fetches PyPI metadata)
-    signals, risk_score = await score_package(req)
-    # 종합 판정
+def _error(status: int, code: str, detail: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status,
+        content=ErrorResponse(error=code, detail=detail).model_dump(),
+    )
+
+
+async def _run_offline_demo(req: ScanRequest):
+    return (
+        _mock_cve_layer(req),
+        _mock_static_layer(req),
+        _mock_risk_layer(req),
+        ["⚠️ 오프라인 데모 모드 (SU_OFFLINE_DEMO) — mock 데이터입니다"],
+    )
+
+
+@router.post(
+    "/scan",
+    response_model=ScanResponse,
+    summary="패키지 통합 스캔",
+    responses={502: {"model": ErrorResponse, "description": "외부 API 조회 실패"}},
+)
+async def scan_package(req: ScanRequest):
+    notes: list[str] = []
+
+    if _OFFLINE_DEMO:
+        vulns, findings, (signals, risk_score), notes = await _run_offline_demo(req)
+    else:
+        # 한 요청 = PyPI 조회 1회 + 아카이브 다운로드 1회. ②③가 같은 컨텍스트를 씁니다.
+        async with PackageContext(req.name, req.version) as ctx:
+            # ① CVE/OSV 매칭
+            try:
+                vulns = await match_package(req, client=ctx.client)
+            except CveLookupError as exc:
+                # 조회 자체가 실패했으면 "취약점 없음"이라고 말할 수 없습니다.
+                return _error(502, "upstream_unavailable", str(exc))
+
+            # ② 정적분석
+            try:
+                findings = await analyze_package(req, ctx=ctx)
+            except PyPIError as exc:
+                # 패키지가 없거나 아카이브를 못 읽은 경우. 스캔 전체를 실패시키지는
+                # 않되, "검사하지 못했다"는 사실은 응답에 드러나야 합니다.
+                findings = []
+                notes.append(f"⚠️ 정적분석 미수행 — {exc}")
+
+            # ③ 위험도 스코어링 (이름 기반 신호는 패키지가 삭제됐어도 동작)
+            signals, risk_score = await score_package(req, ctx=ctx)
+
     verdict, reasons = _decide(vulns, findings, risk_score)
+    reasons.extend(notes)
 
     return ScanResponse(
         scan_id=next(_scan_id_seq),
         ecosystem=req.ecosystem,
         name=req.name,
         version=req.version,
-        scanned_at=datetime.now(timezone.utc),
+        scanned_at=datetime.now(UTC),
         verdict=verdict,
         risk_score=risk_score,
         verdict_reasons=reasons,

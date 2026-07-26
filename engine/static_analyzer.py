@@ -2,11 +2,10 @@
 
 ``analyze_path`` is the real work and is pure filesystem + ``ast``, so the whole
 rule set is testable offline against the fixtures in ``samples/``.
+``analyze_package`` is the thin network-facing wrapper: it asks ``common.pypi``
+for the unpacked artifact and runs the rules over it.
 
 Still to come (tracked, not silently missing):
-  * ``analyze_package`` — fetch the sdist/wheel from PyPI and extract it into a
-    temp dir before calling ``analyze_path``. Must extract defensively: archive
-    entries can carry ``..`` paths or absolute paths (zip-slip).
   * Bandit as a breadth net alongside the custom rules. It runs as a library
     (``bandit.core.manager.BanditManager``) over the same extracted tree; its
     B-codes then need CWE tags, which by the week-0 split is the API part's
@@ -19,6 +18,7 @@ import ast
 from pathlib import Path
 
 from api.schemas import ScanRequest, Severity, StaticFinding
+from common.pypi import PackageContext
 from engine.rules import AST_RULES, FILE_RULES, FileContext
 
 #: Files larger than this are skipped — packaged data blobs, not source.
@@ -107,14 +107,26 @@ def analyze_path(root: str | Path) -> list[StaticFinding]:
     return findings
 
 
-async def analyze_package(req: ScanRequest) -> list[StaticFinding]:
+async def analyze_package(
+    req: ScanRequest,
+    *,
+    ctx: PackageContext | None = None,
+) -> list[StaticFinding]:
     """Engine entry point for layer (2) — replaces the router's ``_mock_static_layer``.
 
-    Not implemented yet: needs the PyPI archive download + safe extraction step
-    described in the module docstring. ``analyze_path`` is the finished half and
-    is what the tests exercise.
+    Pass the router's ``ctx`` so the artifact is downloaded once per scan and
+    shared with the scoring layer. Without one, a private context is created
+    and cleaned up here (handy for scripts and one-off checks).
+
+    Returns ``[]`` when the release publishes no analysable artifact. Download
+    and unpack failures propagate as ``common.pypi.PyPIError`` — the caller
+    decides what to do, because "we could not look" must never be silently
+    reported as "we looked and it was clean".
     """
-    raise NotImplementedError(
-        "archive download/extraction is not implemented yet; "
-        "use analyze_path() on an already-extracted package tree"
-    )
+    if ctx is not None:
+        root = await ctx.extracted_path()
+        return analyze_path(root) if root else []
+
+    async with PackageContext(req.name, req.version) as own_ctx:
+        root = await own_ctx.extracted_path()
+        return analyze_path(root) if root else []

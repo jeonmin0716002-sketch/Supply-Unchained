@@ -30,6 +30,12 @@ RULE_INSTALL_HOOK = "custom-install-hook"
 # override it, so flagging it would be mostly false positives.
 _HOOKED_COMMANDS = {"install", "develop", "egg_info", "build_py", "sdist", "bdist_wheel"}
 
+# Overriding these runs attacker code on the victim's machine during
+# `pip install`, which is the attack this project exists to catch.
+# The rest mostly run on the *publisher's* machine or during a build, so they
+# are worth reporting but not worth blocking on alone.
+_VICTIM_SIDE_COMMANDS = {"install", "develop"}
+
 _SETUP_FILENAMES = {"setup.py"}
 
 
@@ -80,14 +86,19 @@ def setup_command_hook(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFin
             if not hooked:
                 continue
 
+            victim_side = sorted(set(hooked) & _VICTIM_SIDE_COMMANDS)
             yield make_finding(
                 rule=RULE_INSTALL_HOOK,
                 cwe="CWE-94",
-                severity=Severity.MEDIUM,
+                severity=Severity.HIGH if victim_side else Severity.MEDIUM,
                 ctx=ctx,
                 line=keyword.value.lineno,
                 detail=(
-                    "setup() overrides install-time command(s) "
-                    f"{sorted(hooked)} via cmdclass — code runs during 'pip install'"
+                    f"setup() overrides the {sorted(hooked)} command(s) via cmdclass — "
+                    + (
+                        "this code runs on the installing machine during 'pip install'"
+                        if victim_side
+                        else "runs at build/publish time, not on the installing machine"
+                    )
                 ),
             )

@@ -84,6 +84,61 @@ def test_build_ext_override_is_not_flagged(tmp_path):
     assert RULE_INSTALL_HOOK not in rules_in(analyze_path(tmp_path))
 
 
+def test_real_world_setup_py_does_not_produce_high_findings(tmp_path):
+    """Regression: this exact shape blocked the real `requests` sdist.
+
+    Lines 57/58 of requests' setup.py shell out, but only behind a `publish`
+    argv guard, and line 79 is the near-universal __version__ idiom. Reporting
+    them is fine; blocking on them is not.
+    """
+    (tmp_path / "setup.py").write_text(
+        "import os, sys\n"
+        "from setuptools import setup\n"
+        "if sys.argv[-1] == 'publish':\n"
+        "    os.system('python setup.py sdist bdist_wheel')\n"
+        "    os.system('twine upload dist/*')\n"
+        "    sys.exit()\n"
+        "about = {}\n"
+        "with open('pkg/__version__.py') as f:\n"
+        "    exec(f.read(), about)\n"
+        "setup(name='pkg', version=about['__version__'])\n",
+        encoding="utf-8",
+    )
+    findings = analyze_path(tmp_path)
+    assert findings, "the calls should still be reported as context"
+    assert all(f.severity is not Severity.HIGH for f in findings)
+    assert all(f.severity is not Severity.CRITICAL for f in findings)
+
+
+def test_install_command_override_is_high(tmp_path):
+    """Hijacking `install` runs on the victim's machine — that does block."""
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\nsetup(name='x', cmdclass={'install': object})\n",
+        encoding="utf-8",
+    )
+    hooks = [f for f in analyze_path(tmp_path) if f.rule == RULE_INSTALL_HOOK]
+    assert len(hooks) == 1
+    assert hooks[0].severity is Severity.HIGH
+
+
+def test_build_only_command_override_stays_medium(tmp_path):
+    """`sdist`/`bdist_wheel` run for the publisher, not the installing user."""
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\nsetup(name='x', cmdclass={'sdist': object})\n",
+        encoding="utf-8",
+    )
+    hooks = [f for f in analyze_path(tmp_path) if f.rule == RULE_INSTALL_HOOK]
+    assert len(hooks) == 1
+    assert hooks[0].severity is Severity.MEDIUM
+
+
+def test_samples_still_yield_a_blocking_signal():
+    """Each malicious sample must keep at least one HIGH after the retune."""
+    for sample in ("sample1_install_hook", "sample2_obfuscated", "sample3_pth_autoexec"):
+        findings = analyze_path(SAMPLES / sample)
+        assert any(f.severity is Severity.HIGH for f in findings), sample
+
+
 def test_subprocess_without_shell_is_not_flagged(tmp_path):
     (tmp_path / "mod.py").write_text(
         "import subprocess\nsubprocess.run(['ls', '-la'])\n", encoding="utf-8"

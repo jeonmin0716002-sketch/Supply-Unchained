@@ -6,10 +6,10 @@ it fetches everything we need from public PyPI endpoints and returns a plain
 and :mod:`scoring.scorer`, which operate on that object and never touch the
 network -- that split keeps the scoring logic unit-testable offline.
 
-Data sources (both public, no auth):
-    * PyPI JSON API  ``https://pypi.org/pypi/{name}/json``
-    * The source distribution (sdist) archive, only its file *listing* is read
-      to decide whether an install-time ``setup.py`` exists.
+PyPI access itself lives in :mod:`common.pypi`, which is shared with the engine:
+a scan needs the same project JSON and the same artifact for both layers, and
+fetching them twice meant two downloads and two copies of the archive-safety
+code. This module now only decides what the scorer needs from that data.
 
 Important limitations (be honest about these in the demo):
     * The JSON API does **not** expose the maintainer account's creation date,
@@ -21,22 +21,12 @@ Important limitations (be honest about these in the demo):
 
 from __future__ import annotations
 
-import io
-import tarfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import httpx
 
-PYPI_JSON_URL = "https://pypi.org/pypi/{name}/json"
-
-# Network + safety limits.
-_HTTP_TIMEOUT = httpx.Timeout(10.0)
-# Skip inspecting an sdist larger than this (compressed). Malicious packages are
-# almost always tiny; this just guards against accidentally pulling a huge file.
-_MAX_SDIST_BYTES = 20 * 1024 * 1024
-# Stop scanning archive members after this many, as a tar-bomb guard.
-_MAX_ARCHIVE_MEMBERS = 2000
+from common.pypi import PackageContext, PyPIError
 
 
 @dataclass
@@ -84,38 +74,41 @@ def _parse_release_dates(releases: dict) -> list[datetime]:
     return sorted(dates)
 
 
-def _find_sdist_url(version_files: list[dict]) -> str | None:
-    """URL of the source distribution for a version, if one is published."""
-    for f in version_files:
-        if f.get("packagetype") == "sdist":
-            return f.get("url")
-    return None
+def _has_setup_py(archive_names: list[str]) -> bool:
+    """True if the artifact ships an install-time ``setup.py``."""
+    return any(name.rsplit("/", 1)[-1] == "setup.py" for name in archive_names)
 
 
-async def _sdist_has_setup_py(client: httpx.AsyncClient, url: str) -> bool:
-    """Return True if the sdist archive contains a ``setup.py`` member.
-
-    Only the archive's file *listing* is read; nothing is extracted or executed,
-    so this is safe to run against untrusted packages. Any error is treated as
-    "unknown" and returns False rather than failing the whole scan.
-    """
+async def _collect_with_context(ctx: PackageContext, *, inspect_sdist: bool) -> PackageMetadata:
     try:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        content = resp.content
-        if len(content) > _MAX_SDIST_BYTES:
-            return False
-        # sdists are gzipped tarballs (.tar.gz). Read members sequentially and
-        # stop as soon as we see a setup.py.
-        with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as tar:
-            for i, member in enumerate(tar):
-                if i >= _MAX_ARCHIVE_MEMBERS:
-                    break
-                if member.name.rsplit("/", 1)[-1] == "setup.py":
-                    return True
-    except (httpx.HTTPError, tarfile.TarError, OSError, ValueError):
-        return False
-    return False
+        project = await ctx.project()
+    except PyPIError as exc:
+        return PackageMetadata(name=ctx.name, version=ctx.version, note=str(exc))
+
+    meta = PackageMetadata(
+        name=ctx.name,
+        version=ctx.version,
+        found=True,
+        release_dates=_parse_release_dates(project.releases),
+        requires_dist=list(project.info.get("requires_dist") or []),
+    )
+
+    if not project.has_version(ctx.version):
+        # The project exists but this release does not. Metadata-derived signals
+        # would describe some other version, so say so rather than implying the
+        # requested one was checked.
+        meta.note = f"version {ctx.version} is not published for {ctx.name}"
+        return meta
+
+    if inspect_sdist:
+        try:
+            meta.has_install_script = _has_setup_py(await ctx.archive_names())
+        except PyPIError as exc:
+            # Do not let "we could not look" pass as "there is no install
+            # script" -- that silently removes 20 points of risk.
+            meta.note = f"artifact not inspected: {exc}"
+
+    return meta
 
 
 async def collect(
@@ -123,58 +116,22 @@ async def collect(
     version: str,
     *,
     client: httpx.AsyncClient | None = None,
+    ctx: PackageContext | None = None,
     inspect_sdist: bool = True,
 ) -> PackageMetadata:
     """Fetch metadata for ``name==version`` from PyPI.
 
-    Returns a :class:`PackageMetadata`; on a 404 or any network error the object
-    has ``found=False`` and safe defaults, so the caller can still score the
-    package on name-only signals (typosquatting) without special-casing.
+    Pass the router's ``ctx`` so the project JSON and artifact are fetched once
+    per scan and shared with the engine; otherwise a private context is used.
+
+    Never raises: on a 404 or any network error the returned
+    :class:`PackageMetadata` has ``found=False``, safe defaults, and a ``note``
+    saying why, so the caller can still score the package on name-only signals
+    (typosquatting) without special-casing. Malicious packages get removed from
+    PyPI, so "not found" is a case worth scoring, not an error.
     """
-    owns_client = client is None
-    if client is None:
-        client = httpx.AsyncClient(
-            timeout=_HTTP_TIMEOUT,
-            follow_redirects=True,
-            headers={"User-Agent": "Supply-Unchained/0.1"},
-        )
-    try:
-        try:
-            resp = await client.get(PYPI_JSON_URL.format(name=name))
-        except httpx.HTTPError as exc:
-            return PackageMetadata(name=name, version=version, note=f"lookup failed: {exc!r}")
+    if ctx is not None:
+        return await _collect_with_context(ctx, inspect_sdist=inspect_sdist)
 
-        if resp.status_code == 404:
-            return PackageMetadata(
-                name=name,
-                version=version,
-                note="package not found on PyPI (removed, private, or typo)",
-            )
-        if resp.status_code != 200:
-            return PackageMetadata(
-                name=name, version=version, note=f"unexpected status {resp.status_code}"
-            )
-
-        data = resp.json()
-        info = data.get("info", {})
-        releases = data.get("releases", {}) or {}
-
-        meta = PackageMetadata(
-            name=name,
-            version=version,
-            found=True,
-            release_dates=_parse_release_dates(releases),
-            requires_dist=list(info.get("requires_dist") or []),
-        )
-
-        # has_install_script: only meaningful when we can look at the requested
-        # version's sdist. Wheel-only versions cannot run arbitrary install code.
-        version_files = releases.get(version, [])
-        sdist_url = _find_sdist_url(version_files)
-        if inspect_sdist and sdist_url:
-            meta.has_install_script = await _sdist_has_setup_py(client, sdist_url)
-
-        return meta
-    finally:
-        if owns_client:
-            await client.aclose()
+    async with PackageContext(name, version, client=client) as own_ctx:
+        return await _collect_with_context(own_ctx, inspect_sdist=inspect_sdist)
