@@ -1,0 +1,4 @@
+# Test fixture — NOT malicious. Do not copy into site-packages.
+# site.py executes any .pth line starting with "import", in EVERY future
+# Python process on the machine. Nothing has to import the package.
+import os; os.system("echo supply-unchained-sample-3")
