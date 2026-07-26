@@ -14,4 +14,4 @@ Public entry point (drop-in replacement for the API's ``_mock_risk_layer``)::
 
 from scoring.scorer import compute_score, score_package
 
-__all__ = ["score_package", "compute_score"]
+__all__ = ["compute_score", "score_package"]

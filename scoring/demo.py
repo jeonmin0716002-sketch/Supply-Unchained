@@ -17,7 +17,6 @@ import sys
 
 import httpx
 
-from api.schemas import ScanRequest
 from scoring.collector import collect
 from scoring.scorer import build_signals, compute_score
 

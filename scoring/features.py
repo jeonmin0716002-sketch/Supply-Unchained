@@ -16,7 +16,7 @@ The signals:
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 
 from scoring.popular_packages import POPULAR_PACKAGES
@@ -73,7 +73,7 @@ def is_new_package(release_dates: list[datetime], *, now: datetime | None = None
     """
     if not release_dates:
         return False
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     first_release = min(release_dates)
     return (now - first_release) <= timedelta(days=NEW_PACKAGE_DAYS)
 

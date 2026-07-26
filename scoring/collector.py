@@ -24,7 +24,7 @@ from __future__ import annotations
 import io
 import tarfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -77,7 +77,7 @@ def _parse_release_dates(releases: dict) -> list[datetime]:
             except ValueError:
                 continue
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             version_times.append(dt)
         if version_times:
             dates.append(min(version_times))
@@ -134,7 +134,9 @@ async def collect(
     owns_client = client is None
     if client is None:
         client = httpx.AsyncClient(
-            timeout=_HTTP_TIMEOUT, follow_redirects=True, headers={"User-Agent": "Supply-Unchained/0.1"}
+            timeout=_HTTP_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Supply-Unchained/0.1"},
         )
     try:
         try:

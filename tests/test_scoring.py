@@ -4,7 +4,7 @@ Pure/deterministic: no network, no PyPI access -- metadata is hand-built. Runs
 under pytest (`uv run pytest`) or standalone (`python tests/test_scoring.py`).
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from api.schemas import RiskSignals
 from scoring import features
@@ -16,7 +16,7 @@ from scoring.scorer import (
     compute_score,
 )
 
-NOW = datetime(2026, 7, 24, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 24, tzinfo=UTC)
 
 
 # ── typosquat_score ───────────────────────────────────────────────
