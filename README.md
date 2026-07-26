@@ -10,7 +10,10 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 
 `Static Analysis` · `CVE/OSV` · `Risk Scoring` · `FastAPI` · `Python`
 
-> ⚠️ **Phase 1 진행 중입니다.** API 스키마와 mock 데모는 동작하며, 엔진·스코어러는 각 파트가 구현 중입니다. 세부 스키마·규칙셋은 팀 합의에 따라 변경될 수 있습니다.
+> ⚙️ **Phase 1 진행 중 — 탐지 레이어 3개가 모두 실제로 동작합니다.**
+> `pip install requests==2.30.0` 을 스캔하면 실제 OSV 취약점 8건을 찾아내고,
+> 악성 샘플의 `.pth` 자동실행·설치 훅·난독화 페이로드를 차단합니다.
+> 남은 것은 CLI/프록시·대시보드(재웅)와 Bandit 연동입니다. 임계값·규칙셋은 계속 튜닝 중입니다.
 
 </div>
 
@@ -261,7 +264,7 @@ erDiagram
 
 > **세 파트가 만나는 계약(contract) 지점.** `api/schemas.py`가 소스 오브 트루스이며,
 > 스키마 변경은 반드시 팀 합의 후 진행합니다.
-> 현재 엔진·스코어러는 mock으로 동작하며, 각 파트가 자기 모듈로 교체합니다.
+> 세 레이어 모두 실제 모듈이 연결되어 있습니다 (mock 아님).
 
 ### 엔드포인트
 
@@ -352,6 +355,17 @@ flowchart TB
 
 > 임계값(70 / 40)은 검증용 샘플로 튜닝 예정.
 
+**`high`를 아무 데나 쓰지 않는 이유:** 처음엔 `eval`·`exec`·`os.system`을 전부 high로
+잡았다가, 실제 `requests` sdist를 스캔했더니 **`block`이 나왔습니다.** 걸린 코드는
+`if sys.argv[-1] == "publish"` 가드 안의 배포용 셸 명령과, 버전을 읽는
+`exec(f.read(), about)` 관용구였습니다 — 둘 다 설치와 무관하거나 거의 모든 패키지가 씁니다.
+
+> 위험 함수 호출은 그 자체로 판정 근거가 아니라 **정황**입니다.
+> `high`는 "Python 코드에 흔한 것"이 아니라 **"공급망 공격에 특유한 것"**에만 씁니다 —
+> `.pth` 자동실행 · `install`/`develop` 명령 탈취 · 디코딩→실행 체인.
+
+자세한 근거는 [`engine/README.md`](engine/README.md#심각도-모델--왜-custom-dangerous-call은-high가-아닌가) 참고.
+
 ### 에러 응답
 
 ```jsonc
@@ -359,16 +373,38 @@ flowchart TB
 ```
 404(패키지 없음) / 502(외부 API 실패) 등에 공통 사용.
 
-### mock → 실제 모듈 교체 지점
+### 레이어 연결 상태
 
-각 파트는 `api/routers/scan.py`의 mock 함수를 자기 모듈 호출로 바꾸면 통합 완료:
+| 레이어 | 실제 모듈 | 담당 | 상태 |
+|---|---|---|:---:|
+| ① CVE/OSV | `engine.cve_matcher.match_package` | 민규 | ✅ |
+| ② 정적분석 | `engine.static_analyzer.analyze_package` | 민규 | ✅ (Bandit 연동 남음) |
+| ③ 위험도 | `scoring.scorer.score_package` | 승준 | ✅ |
+| 종합 판정 | `api/routers/scan.py::_decide` | — | ✅ (엔진 이전은 미결) |
 
-| mock 함수 | 교체 대상 | 담당 |
-|---|---|---|
-| `_mock_cve_layer` | `engine.cve_matcher` | 탐지 엔진 |
-| `_mock_static_layer` | `engine.static_analyzer` | 탐지 엔진 |
-| `_mock_risk_layer` | `scoring.scorer` | 데이터·스코어링 |
-| `_decide` | 종합 판정 로직 (엔진으로 이전 검토) | 탐지 엔진 |
+**요청당 PyPI 조회 1회 · 아카이브 다운로드 1회.** 라우터가 `common.pypi.PackageContext`를
+만들어 ②③에 넘기기 때문입니다. 레이어마다 따로 받으면 같은 sdist를 두 번 내려받습니다.
+
+### 오프라인 데모 모드
+
+```bash
+SU_OFFLINE_DEMO=1 uv run uvicorn api.main:app
+```
+
+네트워크 없이 mock 데이터로 동작합니다 (발표장 회선 사고 대비).
+이 모드일 때는 응답의 `verdict_reasons`에 mock임이 명시됩니다.
+
+### 에러 처리 정책
+
+| 상황 | 응답 |
+|---|---|
+| OSV 조회 실패 | **502** — 조회가 실패했으면 "취약점 없음"이라고 말할 수 없음 |
+| 패키지가 PyPI에 없음 | **200** + 정적분석 미수행 표시 |
+| 아카이브를 못 읽음 | **200** + 정적분석 미수행 표시 |
+
+> 없는 패키지를 404로 처리하지 **않는** 이유: 탐지된 악성 패키지는 PyPI에서 삭제되므로,
+> "없음"이야말로 경고할 가치가 있는 상태입니다. 이름 기반 typosquat 점수는 계속 동작합니다.
+> (README 초안의 `package_not_found` 404와 다른 동작 — 팀 확정 필요)
 
 ---
 
@@ -419,11 +455,14 @@ gantt
     section Phase 0 기획·세팅
     기획·레포·세팅        :done, p0, 2026-07-16, 2026-07-22
     API 스키마 합의       :active, sch, 2026-07-22, 1d
+    uv 프로젝트 초기화     :done, uvs, 2026-07-27, 1d
 
     section Phase 1 코어 (병렬)
-    엔진 OSV+정적분석     :e1, 2026-07-22, 14d
-    스코어러 수집+가중치   :s1, 2026-07-22, 14d
-    API+프록시 PoC        :a1, 2026-07-22, 14d
+    엔진 OSV+정적분석     :done, e1, 2026-07-22, 2026-07-27
+    스코어러 수집+가중치   :done, s1, 2026-07-22, 2026-07-24
+    레이어 통합·배선       :done, wire, 2026-07-27, 1d
+    Bandit 연동           :b1, 2026-07-28, 5d
+    API+프록시 PoC        :a1, 2026-07-27, 9d
     중간 점검             :milestone, mid, 2026-07-29, 0d
 
     section Phase 2 통합
@@ -438,24 +477,31 @@ gantt
     제출 마감            :milestone, ddl, 2026-08-27, 0d
 ```
 
-### Phase 0 — 기획 & 초기 세팅 ✅ 진행 중
+### Phase 0 — 기획 & 초기 세팅 ✅ 완료
 - [x] 프로젝트 방향·스코프 확정
 - [x] 레포 생성 · 팀원 초대
 - [x] 개발환경 통일 (Python 3.12 · uv · Docker slim)
 - [x] API 스키마 초안 + mock 데모 구현
-- [x] 레포 구조 스캐폴딩 (`api/` 패키지) · `.gitignore` 정비
-- [ ] **API 스키마 팀 합의 확정** (Week 0 회의)
+- [x] 레포 구조 스캐폴딩 · `.gitignore` 정비
+- [x] **uv 프로젝트 실제 초기화** (`pyproject.toml` · `uv.lock` 커밋)
+- [ ] **API 스키마 팀 합의 확정** (Week 0 회의 — 체크박스 미기입 상태)
 
 ### Phase 1 — 코어 기능 (병렬)
-- [ ] **탐지 엔진**: OSV/NVD 연동 + 정적분석기(Bandit 연동 → 커스텀 규칙)
-- [ ] **데이터·스코어링**: PyPI 메타데이터 수집 + 규칙 기반 스코어러
-- [ ] **API·클라이언트**: FastAPI 뼈대 + `/scan` 엔드포인트 + pip 프록시 PoC
+- [x] **탐지 엔진 ①**: OSV.dev 연동 (실동작)
+- [x] **탐지 엔진 ②**: 커스텀 규칙 4종 (`.pth` · install hook · 위험 호출 · 난독화)
+- [ ] **탐지 엔진 ②**: Bandit 라이브러리 연동 (의존성만 등록됨)
+- [x] **데이터·스코어링**: PyPI 메타데이터 수집 + 규칙 기반 스코어러 (실동작)
+- [x] **공용**: PyPI fetcher (`common/`) — 다운로드·안전 추출
+- [ ] **API·클라이언트**: pip 프록시 PoC · CLI
 
 ### Phase 2 — 통합
-- [ ] 세 모듈을 `/scan` 응답 하나로 통합
+- [x] 세 모듈을 `/scan` 응답 하나로 통합
+- [x] 테스트 샘플(악성 패턴 4종)로 탐지 검증
+- [x] 실제 PyPI 패키지 대상 오탐 검증 (`requests` · `flask`)
 - [ ] CLI ↔ API ↔ 엔진 end-to-end 동작
 - [ ] SBOM 대시보드 연동
-- [ ] 테스트 샘플(악성 패턴 4종)로 탐지 검증
+
+> 📌 통합 리뷰 결과와 7/29 중간점검 결정 안건은 [`docs/week1-review.md`](docs/week1-review.md) 참고.
 
 ### Phase 3 — 다듬기 & 발표
 - [ ] 실제 PyPI 패키지 대상 스캔 데모
@@ -467,53 +513,64 @@ gantt
 
 ## ⚙️ 초기 세팅 가이드
 
-> `api/`는 구현되어 실행 가능합니다. 나머지 디렉토리는 각 파트가 Phase 1에서 채워 나갑니다.
+> `api/` · `engine/` · `scoring/` · `common/` 은 구현되어 실행 가능합니다.
+> `cli/` · `dashboard/` 는 Phase 1에서 채워집니다. (✅ = 구현됨)
 
 ### 레포 구조
 
 ```
 Supply-Unchained/
 ├── README.md
-├── LICENSE                 # MIT (오픈소스 공모전 취지)
-├── pyproject.toml          # 의존성·빌드 설정
-├── .gitignore              # .env, __pycache__ 등
-├── .env.example            # 키/URL 템플릿 (실제 .env는 커밋 금지)
-├── docker-compose.yml
+├── pyproject.toml          # ✅ 의존성 (uv)
+├── uv.lock                 # ✅ 커밋 필수 — 전원 동일 환경
+├── .python-version         # ✅ 3.12
+├── .gitignore
+├── LICENSE                 # MIT (오픈소스 공모전 취지) — 미작성
+├── docker-compose.yml      # 미작성
 │
-├── api/                    # FastAPI
-│   ├── main.py             # 앱 진입점 (/health, /docs)
-│   ├── schemas.py          # ⭐ 세 파트 공통 계약 (변경 시 팀 합의)
-│   └── routers/
-│       └── scan.py         # POST /api/v1/scan + 종합 판정
+├── api/                    # ✅ FastAPI
+│   ├── main.py             #    앱 진입점 (/health, /docs)
+│   ├── schemas.py          #    ⭐ 세 파트 공통 계약 (변경 시 팀 합의)
+│   └── routers/scan.py     #    POST /api/v1/scan + 종합 판정 + 오프라인 모드
 │
-├── engine/                 # 탐지 엔진
-│   ├── cve_matcher.py      # OSV/NVD 연동
-│   ├── static_analyzer.py  # AST + Bandit + 커스텀 규칙
-│   ├── rules/              # .pth / install-hook 커스텀 규칙
-│   └── verdict.py          # 종합 판정 + CWE 태깅
+├── common/                 # ✅ 두 파트가 함께 쓰는 것만
+│   └── pypi.py             #    PyPI 조회 · 아카이브 다운로드 · 안전 추출
 │
-├── scoring/                # 데이터·스코어링
-│   ├── collector.py        # PyPI 메타데이터 수집
-│   ├── features.py         # 위험 신호 추출
-│   └── scorer.py           # 규칙 기반 가중치 스코어링
+├── engine/                 # ✅ 탐지 엔진 (레이어 ①②) — 민규
+│   ├── README.md           #    레이어별 설계 근거 · 한계
+│   ├── cve_matcher.py      #    OSV.dev 연동
+│   ├── static_analyzer.py  #    트리 순회 + AST (Bandit 연동 예정)
+│   ├── rules/
+│   │   ├── base.py         #    룰 인터페이스
+│   │   ├── install_hooks.py#    .pth 자동실행 · cmdclass 훅
+│   │   └── code_patterns.py#    위험 호출 · 난독화 페이로드
+│   └── verdict.py          #    커스텀 룰 CWE 카탈로그
 │
-├── cli/                    # CLI / 프록시
-│   └── su_scan.py
+├── scoring/                # ✅ 데이터·스코어링 (레이어 ③) — 승준
+│   ├── README.md           #    가중치 근거 · 실측 재현율
+│   ├── collector.py        #    메타데이터 정규화
+│   ├── features.py         #    위험 신호 추출
+│   ├── scorer.py           #    규칙 기반 가중치
+│   └── popular_packages.py #    typosquat 비교 대상
 │
-├── dashboard/              # SBOM 시각화 (프론트)
+├── cli/                    # 미작성 — CLI / pip 프록시 (재웅)
+├── dashboard/              # 미작성 — SBOM 시각화 (재웅)
 │
-├── samples/                # 테스트용 악성 패턴 샘플
-│   ├── sample1_setup.py    # os.system
-│   ├── sample2_exec.py     # base64 + exec
-│   ├── sample3_install.pth # .pth 자동실행
-│   └── sample4_pickle.py   # 역직렬화
+├── samples/                # ✅ 악성 패턴 샘플 (전부 무해한 픽스처)
+│   ├── sample1_install_hook/setup.py      # 설치 훅 + 셸 명령
+│   ├── sample2_obfuscated/loader.py       # base64 → exec
+│   ├── sample3_pth_autoexec/install.pth   # .pth 자동실행
+│   └── sample4_pickle/cache.py            # 역직렬화
 │
-├── tests/
+├── tests/                  # ✅ 83개 (82개 오프라인)
 └── docs/
-    └── architecture.md
+    └── week1-review.md     # ✅ 리뷰 결과 · 회의 안건
 ```
 
-### 개발 환경 준비 (예정)
+> `samples/`는 **디렉토리 1개 = 압축 해제된 패키지 1개** 구조입니다.
+> 엔진이 실제로 받는 입력 형태와 같아야 규칙이 제대로 검증됩니다.
+
+### 개발 환경 준비
 
 ```bash
 # 0. uv 설치 (최초 1회)
@@ -521,19 +578,24 @@ curl -LsSf https://astral.sh/uv/install.sh | sh          # macOS / Linux
 # Windows: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # 1. 클론
-git clone https://github.com/<org>/Supply-Unchained.git
+git clone https://github.com/jeonmin0716002-sketch/Supply-Unchained.git
 cd Supply-Unchained
 
 # 2. 환경 복원 (uv.lock 기준으로 전원 동일 환경)
 uv sync
 
-# 3. 환경변수
-cp .env.example .env
-
-# 4. 로컬 실행
+# 3. 로컬 실행
 uv run uvicorn api.main:app --reload
-# → http://localhost:8000/docs 에서 스키마 확인·테스트
+# → http://localhost:8000/docs 에서 실제 패키지로 테스트
+
+# 4. 테스트 / 린트
+uv run pytest              # 오프라인 (기본)
+uv run pytest -m live      # 실제 OSV.dev를 때리는 통합 테스트 (opt-in)
+uv run ruff check .
 ```
+
+아직 `.env`가 필요한 설정은 없습니다 (OSV·PyPI 모두 인증 불필요).
+`SU_OFFLINE_DEMO=1` 만 있으면 네트워크 없이 데모가 됩니다.
 
 **의존성 추가할 때**
 ```bash
