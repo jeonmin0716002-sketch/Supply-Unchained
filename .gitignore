@@ -12,6 +12,10 @@ __pycache__/
 build/
 dist/
 
+# 도구 캐시 (uv.lock은 커밋 대상 — 그라운드 룰)
+.pytest_cache/
+.ruff_cache/
+
 # 도구 설정
 .claude/
 

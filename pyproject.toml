@@ -1,0 +1,55 @@
+[project]
+name = "supply-unchained"
+version = "0.1.0"
+description = "Pre-install supply chain security scanner for the pip ecosystem"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "httpx>=0.27",
+    "bandit>=1.7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+# The repo is run from its root (`uv run uvicorn api.main:app`), so the top-level
+# packages (api/, engine/, scoring/, ...) are imported in place rather than
+# installed. This keeps pyproject.toml stable as new part directories land.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Tests that hit real upstream APIs are opt-in: `uv run pytest -m live`.
+addopts = "-m 'not live'"
+markers = ["live: needs network access to a real upstream API (OSV, PyPI)"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# samples/ is deliberately written the way malware is written; linting it is
+# meaningless and every finding there is the point, not a defect.
+exclude = ["samples"]
+
+[tool.ruff.lint]
+# Pinned explicitly so a ruff upgrade cannot turn the whole team's build red.
+select = ["E", "F", "I", "UP", "B", "SIM", "PIE", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Cleaned up together with the scoring merge: feat/scoring-rule-based edits the
+# same function, so scan.py must not pick up conflicting churn right now.
+"api/routers/scan.py" = ["UP017"]
+# UP042 wants `StrEnum` instead of `(str, Enum)`. That is not a cosmetic swap --
+# it changes what `str(member)` returns -- and schemas.py is the agreed
+# cross-part contract, so it only changes by team decision, not by a linter.
+"api/schemas.py" = ["UP042"]

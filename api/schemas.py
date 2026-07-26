@@ -12,7 +12,6 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-
 # ──────────────────────────────
 # 공통 Enum
 # ──────────────────────────────
