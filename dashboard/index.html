@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supply-Unchained — 스캔 콘솔</title>
+<style>
+  :root{
+    --bg:#10141D; --surface:#1A2130; --surface2:#212A3D; --line:#2B364D;
+    --ink:#E8ECF4; --muted:#8B94A7; --accent:#7FA3C8;
+    --safe:#3DD6A3; --warn:#F5B84D; --block:#F4645C;
+    --mono:ui-monospace,'JetBrains Mono','IBM Plex Mono',Consolas,monospace;
+    --sans:Pretendard,'Noto Sans KR',system-ui,'Apple SD Gothic Neo',sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+       font-size:15px;line-height:1.55;padding:28px 20px 60px}
+  .wrap{max-width:1060px;margin:0 auto}
+  a{color:var(--accent)}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+  /* ── 헤더: 워드마크 + 끊어진 체인 시그니처 ── */
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  .wordmark{font-family:var(--mono);font-size:clamp(20px,3.4vw,28px);font-weight:700;
+            letter-spacing:.06em}
+  .wordmark .cut{color:var(--block)}
+  .tagline{color:var(--muted);font-size:13px}
+  #chain{display:block;margin:10px 0 26px}
+
+  .grid{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:22px}
+  @media(max-width:840px){.grid{grid-template-columns:1fr}}
+
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px}
+  h2{margin:0 0 14px;font-size:13px;font-weight:600;letter-spacing:.12em;color:var(--muted);
+     text-transform:uppercase;font-family:var(--mono)}
+
+  /* ── 스캔 폼 ── */
+  .scanform{display:flex;gap:8px;flex-wrap:wrap}
+  input{flex:1 1 160px;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+        color:var(--ink);padding:10px 12px;font-family:var(--mono);font-size:14px}
+  input::placeholder{color:#5A6478}
+  button{background:var(--accent);color:#0D1320;border:0;border-radius:8px;padding:10px 18px;
+         font-weight:700;font-size:14px;cursor:pointer;font-family:inherit}
+  button:disabled{opacity:.5;cursor:wait}
+  .hint{color:var(--muted);font-size:12.5px;margin-top:10px}
+  .hint code{font-family:var(--mono);background:var(--surface2);padding:1px 6px;border-radius:4px}
+
+  /* ── 판정 결과 ── */
+  #result{margin-top:22px}
+  .verdict-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .badge{font-family:var(--mono);font-weight:700;font-size:15px;padding:5px 14px;
+         border-radius:999px;border:1.5px solid}
+  .v-safe{color:var(--safe);border-color:var(--safe)}
+  .v-warn{color:var(--warn);border-color:var(--warn)}
+  .v-block{color:var(--block);border-color:var(--block)}
+  .pkg{font-family:var(--mono);font-size:16px;font-weight:600}
+  .score{margin-left:auto;font-family:var(--mono);color:var(--muted)}
+  .score b{color:var(--ink);font-size:18px}
+  ul.reasons{margin:14px 0 4px;padding-left:20px}
+  ul.reasons li{margin:3px 0}
+  .layer-errors{margin-top:12px;border:1px dashed var(--warn);border-radius:8px;
+                padding:10px 14px;color:var(--warn);font-size:13.5px}
+  details{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+  summary{cursor:pointer;color:var(--muted);font-size:13px;font-family:var(--mono)}
+  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13.5px}
+  th{color:var(--muted);font-weight:600;text-align:left;font-size:12px;letter-spacing:.05em}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  td.mono, .mono{font-family:var(--mono)}
+  .sev-high,.sev-critical{color:var(--block)} .sev-medium{color:var(--warn)} .sev-low{color:var(--muted)}
+
+  /* ── 이력 ── */
+  .hist-row{display:flex;gap:10px;align-items:center;width:100%;text-align:left;
+            background:none;border:0;border-bottom:1px solid var(--line);
+            color:var(--ink);padding:9px 4px;font:inherit;cursor:pointer;border-radius:0}
+  .hist-row:hover{background:var(--surface2)}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .d-safe{background:var(--safe)} .d-warn{background:var(--warn)} .d-block{background:var(--block)}
+  .hist-pkg{font-family:var(--mono);font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hist-meta{margin-left:auto;color:var(--muted);font-size:12px;font-family:var(--mono);flex:none}
+  .empty{color:var(--muted);font-size:13.5px;padding:8px 2px}
+
+  @media(prefers-reduced-motion:no-preference){
+    #result .card-anim{animation:rise .25s ease-out}
+    @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="wordmark">SUPPLY<span class="cut">⛓︎</span>UNCHAINED</div>
+    <div class="tagline">설치되기 전에 끊어낸다 — pip 공급망 스캔 콘솔</div>
+  </header>
+
+  <!-- 시그니처: 체인. 판정에 따라 마지막 스캔 결과가 사슬을 '끊는다' -->
+  <svg id="chain" width="100%" height="26" viewBox="0 0 1060 26" preserveAspectRatio="xMidYMid meet"
+       role="img" aria-label="체인 상태 표시"></svg>
+
+  <div class="grid">
+    <section>
+      <div class="card">
+        <h2>Scan</h2>
+        <div class="scanform">
+          <input id="pkgName" placeholder="패키지 이름 (예: reqeusts)" aria-label="패키지 이름">
+          <input id="pkgVer" placeholder="버전 (예: 1.0.0)" aria-label="버전" style="flex:0 1 140px">
+          <button id="scanBtn">스캔</button>
+        </div>
+        <p class="hint">CLI: <code>python -m cli.su_scan check &lt;pkg&gt;==&lt;ver&gt;</code> ·
+           pip 프록시: <code>pip install --index-url http://localhost:8000/simple/ &lt;pkg&gt;</code></p>
+      </div>
+      <div id="result" aria-live="polite"></div>
+    </section>
+
+    <aside class="card">
+      <h2>Scan History</h2>
+      <div id="history"><p class="empty">아직 스캔 이력이 없습니다. 첫 스캔을 실행해 보세요.</p></div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ── 시그니처 체인: safe=연결, warn=균열, block=절단 ── */
+function drawChain(state){
+  const svg = $("#chain"), W = 1060, links = 17, w = W/links;
+  const color = state==="block" ? "var(--block)" : state==="warn" ? "var(--warn)"
+              : state==="safe" ? "var(--safe)" : "var(--line)";
+  let out = "";
+  for(let i=0;i<links;i++){
+    const cx = i*w + w/2, broken = state==="block" && i===Math.floor(links/2);
+    if(broken){
+      out += `<path d="M ${cx-w/2+6} 13 q 6 -9 10 -2" stroke="${color}" stroke-width="2.5" fill="none"/>`
+           + `<path d="M ${cx+w/2-16} 15 q 6 9 10 2" stroke="${color}" stroke-width="2.5" fill="none"/>`;
+    }else{
+      out += `<ellipse cx="${cx}" cy="13" rx="${w/2-4}" ry="8" stroke="${color}"
+               stroke-width="2.5" fill="none" ${state==="warn"&&i%4===2?'stroke-dasharray="6 5"':''}/>`;
+    }
+  }
+  svg.innerHTML = out;
+}
+drawChain("idle");
+
+/* ── 결과 렌더 ── */
+const sevCls = s => "sev-"+esc(s);
+function renderResult(r){
+  const v = r.verdict;
+  const vulns = r.vulnerabilities?.length ? `
+    <details open><summary>알려진 취약점 ${r.vulnerabilities.length}건</summary>
+    <table><tr><th>ID</th><th>CWE</th><th>심각도</th><th>요약</th><th>패치 버전</th></tr>
+    ${r.vulnerabilities.map(x=>`<tr><td class="mono">${esc(x.id)}</td>
+      <td class="mono">${esc((x.cwe_ids||[]).join(", ")||"-")}</td>
+      <td class="${sevCls(x.severity)}">${esc(x.severity)}</td>
+      <td>${esc(x.summary||"-")}</td><td class="mono">${esc(x.fixed_version||"-")}</td></tr>`).join("")}
+    </table></details>` : "";
+  const finds = r.static_findings?.length ? `
+    <details open><summary>정적분석 탐지 ${r.static_findings.length}건</summary>
+    <table><tr><th>규칙</th><th>CWE</th><th>심각도</th><th>위치</th><th>내용</th></tr>
+    ${r.static_findings.map(x=>`<tr><td class="mono">${esc(x.rule)}</td><td class="mono">${esc(x.cwe)}</td>
+      <td class="${sevCls(x.severity)}">${esc(x.severity)}</td>
+      <td class="mono">${esc(x.location)}</td><td>${esc(x.detail||"-")}</td></tr>`).join("")}
+    </table></details>` : "";
+  const sig = r.risk_signals || {};
+  const errs = r.layer_errors?.length ? `<div class="layer-errors">⚠ 일부 탐지 레이어가 실패한 상태의
+    판정입니다 — ${r.layer_errors.map(esc).join(" · ")}</div>` : "";
+
+  $("#result").innerHTML = `
+  <div class="card card-anim">
+    <div class="verdict-head">
+      <span class="badge v-${esc(v)}">${v==="safe"?"SAFE":v==="warn"?"WARN":"BLOCK"}</span>
+      <span class="pkg">${esc(r.name)}==${esc(r.version)}</span>
+      <span class="score">위험도 <b>${r.risk_score}</b>/100</span>
+    </div>
+    <ul class="reasons">${(r.verdict_reasons||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
+    ${errs}${vulns}${finds}
+    <details><summary>메타데이터 위험 신호</summary>
+      <table>
+        <tr><th>신규 패키지(계정 프록시)</th><td class="mono">${sig.is_new_account}</td></tr>
+        <tr><th>typosquat 유사도</th><td class="mono">${sig.typosquat_score}</td></tr>
+        <tr><th>install script</th><td class="mono">${sig.has_install_script}</td></tr>
+        <tr><th>의존성 수</th><td class="mono">${sig.dependency_count}</td></tr>
+        <tr><th>배포 버스트</th><td class="mono">${sig.release_burst}</td></tr>
+      </table></details>
+    <p class="hint mono">scan_id=${r.scan_id} · ${esc((r.scanned_at||"").slice(0,19).replace("T"," "))} UTC</p>
+  </div>`;
+  drawChain(v);
+}
+
+/* ── 이력 ── */
+async function loadHistory(){
+  try{
+    const rows = await (await fetch("/api/v1/scans?limit=30")).json();
+    if(!rows.length) return;
+    $("#history").innerHTML = rows.map(r=>`
+      <button class="hist-row" data-id="${r.scan_id}">
+        <span class="dot d-${esc(r.verdict)}" aria-label="${esc(r.verdict)}"></span>
+        <span class="hist-pkg">${esc(r.name)}==${esc(r.version)}</span>
+        <span class="hist-meta">${r.risk_score} · ${esc((r.scanned_at||"").slice(5,16).replace("T"," "))}</span>
+      </button>`).join("");
+    document.querySelectorAll(".hist-row").forEach(b=>b.addEventListener("click", async ()=>{
+      const res = await fetch("/api/v1/scans/"+b.dataset.id);
+      if(res.ok) renderResult(await res.json());
+    }));
+  }catch(e){ /* API 미기동 시 조용히 유지 */ }
+}
+
+/* ── 스캔 실행 ── */
+async function scan(){
+  const name = $("#pkgName").value.trim(), version = $("#pkgVer").value.trim();
+  if(!name || !version){
+    $("#result").innerHTML = `<div class="card"><p class="empty">패키지 이름과 버전을 모두 입력해 주세요.
+      버전을 모르면 CLI의 <span class="mono">check &lt;pkg&gt;</span>가 최신 버전을 찾아줍니다.</p></div>`;
+    return;
+  }
+  const btn = $("#scanBtn"); btn.disabled = true; btn.textContent = "스캔 중…";
+  $("#result").innerHTML = `<div class="card"><p class="empty">스캔 중 — 아카이브를 내려받아
+    정적분석까지 수행하므로 수십 초 걸릴 수 있습니다.</p></div>`;
+  try{
+    const res = await fetch("/api/v1/scan",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ecosystem:"pip",name,version})});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    renderResult(await res.json());
+    loadHistory();
+  }catch(e){
+    $("#result").innerHTML = `<div class="card"><p class="empty">스캔 실패: ${esc(e.message)} —
+      API 서버가 실행 중인지 확인해 주세요.</p></div>`;
+  }finally{ btn.disabled = false; btn.textContent = "스캔"; }
+}
+$("#scanBtn").addEventListener("click", scan);
+[["#pkgName"],["#pkgVer"]].forEach(([s])=>$(s).addEventListener("keydown",e=>{if(e.key==="Enter")scan();}));
+loadHistory();
+</script>
+</body>
+</html>

@@ -1,19 +1,31 @@
-"""
-POST /api/v1/scan — 통합 스캔 엔드포인트 (데모)
+"""POST /api/v1/scan — 통합 스캔 엔드포인트 (실 레이어 연동판).
 
-실제 엔진/스코어러가 아직 없으므로 목(mock) 데이터로 응답 흐름을 시뮬레이션.
-각 파트는 아래 _mock_* 함수를 자기 모듈 호출로 교체하면 됨:
-  _mock_cve_layer     → engine.cve_matcher
-  _mock_static_layer  → engine.static_analyzer
-  _mock_risk_layer    → scoring.scorer
+Phase 2 통합: 이전 버전의 _mock_* 3개를 각 파트의 실제 구현으로 교체.
+
+    ① CVE/OSV  -> engine.cve_matcher.match_package      (민규)
+    ② 정적분석  -> api.package_fetcher + engine.analyze_path (민규 엔진의 완성 절반 +
+                   아카이브 수집은 통합측 임시 담당 — package_fetcher.py 참고)
+    ③ 스코어링  -> scoring.scorer.score_package          (승준)
+
+레이어 부분 실패 정책 (팀 리뷰 대상):
+    외부 API 장애로 한 레이어가 죽어도 스캔 전체를 502로 죽이지 않고,
+    남은 레이어로 판정하되 실패 사실을 ``layer_errors`` 로 응답에 명시한다.
+    (보안 도구가 장애를 숨기고 "safe"를 주는 것이 최악의 동작이므로,
+    CLI/대시보드는 layer_errors 가 있으면 반드시 경고를 띄운다.)
 """
 
+from __future__ import annotations
+
+import asyncio
 from datetime import datetime, timezone
-from itertools import count
 
-from fastapi import APIRouter
+import httpx
+from fastapi import APIRouter, HTTPException, Query, Request
 
+from api.cwe import tag_vulnerabilities
+from api.package_fetcher import PackageFetchError, fetched_package_tree
 from api.schemas import (
+    ErrorResponse,
     RiskSignals,
     ScanRequest,
     ScanResponse,
@@ -21,9 +33,10 @@ from api.schemas import (
     StaticFinding,
     Verdict,
     Vulnerability,
-    VulnSource,
 )
-from scoring.scorer import score_package  # layer 3: real risk scorer (data track)
+from api.storage import ScanStore
+from engine import CveLookupError, analyze_path, match_package
+from scoring.scorer import score_package
 
 router = APIRouter(prefix="/api/v1", tags=["scan"])
 
@@ -35,73 +48,56 @@ _SEVERITY_ORDER = {
     Severity.CRITICAL: 3,
 }
 
-_scan_id_seq = count(1)
-
-# 데모용 시나리오: 패키지 이름에 따라 3가지 판정을 재현
-_DEMO_MALICIOUS = {"reqeusts", "colourama", "python-sqlite"}   # typosquat 흉내
-_DEMO_VULNERABLE = {"requests"}                                 # 알려진 CVE 보유 흉내
-
-
-def _mock_cve_layer(req: ScanRequest) -> list[Vulnerability]:
-    if req.name in _DEMO_VULNERABLE:
-        return [
-            Vulnerability(
-                source=VulnSource.OSV,
-                id="GHSA-9wx4-h78v-vm56",
-                severity=Severity.MEDIUM,
-                summary="Proxy-Authorization 헤더가 리다이렉트 시 유출될 수 있음",
-                fixed_version="2.31.1",
-            )
-        ]
-    return []
+#: 레이어 실패 시 스코어링 대체값 — "모름"은 0점이 아니라 신호 없음으로 취급하고,
+#: 실패 사실 자체는 layer_errors 로 드러낸다.
+_NEUTRAL_SIGNALS = RiskSignals(
+    is_new_account=False,
+    typosquat_score=0.0,
+    has_install_script=False,
+    dependency_count=0,
+    release_burst=False,
+)
 
 
-def _mock_static_layer(req: ScanRequest) -> list[StaticFinding]:
-    if req.name in _DEMO_MALICIOUS:
-        return [
-            StaticFinding(
-                rule="custom-pth",
-                cwe="CWE-94",
-                severity=Severity.HIGH,
-                location="install.pth:1",
-                detail=".pth 파일을 통한 인터프리터 시작 시 자동 실행 코드",
-            ),
-            StaticFinding(
-                rule="B102",
-                cwe="CWE-78",
-                severity=Severity.HIGH,
-                location="setup.py:14",
-                detail="base64 디코딩 후 exec() 호출 패턴",
-            ),
-        ]
-    return []
+# ──────────────────────────────
+# 레이어 호출 (각각 독립적으로 실패 가능)
+# ──────────────────────────────
+
+async def _layer_cve(
+    req: ScanRequest, http: httpx.AsyncClient, errors: list[str]
+) -> list[Vulnerability]:
+    try:
+        return await match_package(req, client=http)
+    except CveLookupError as exc:
+        errors.append(f"cve: {exc}")
+        return []
 
 
-def _mock_risk_layer(req: ScanRequest) -> tuple[RiskSignals, int]:
-    """Deprecated: superseded by ``scoring.scorer.score_package``.
+async def _layer_static(
+    req: ScanRequest, http: httpx.AsyncClient, errors: list[str]
+) -> list[StaticFinding]:
+    try:
+        async with fetched_package_tree(req.name, req.version, client=http) as tree:
+            # analyze_path 는 순수 파일시스템 작업(동기) — 이벤트 루프를 막지 않게 스레드로.
+            return await asyncio.to_thread(analyze_path, tree)
+    except PackageFetchError as exc:
+        errors.append(f"static: {exc}")
+        return []
 
-    Kept only as an offline fallback for demos with no network. The live
-    endpoint now calls the real scorer (see ``scan_package`` below).
-    """
-    if req.name in _DEMO_MALICIOUS:
-        signals = RiskSignals(
-            is_new_account=True,
-            typosquat_score=0.82,
-            has_install_script=True,
-            dependency_count=0,
-            release_burst=True,
-        )
-        # 가중치 합산: 신규계정 25 + typosquat 30 + install script 20 + 배포패턴 15 = 90
-        return signals, 90
-    signals = RiskSignals(
-        is_new_account=False,
-        typosquat_score=0.05,
-        has_install_script=False,
-        dependency_count=4,
-        release_burst=False,
-    )
-    return signals, 5
 
+async def _layer_scoring(
+    req: ScanRequest, errors: list[str]
+) -> tuple[RiskSignals, int]:
+    try:
+        return await score_package(req)
+    except Exception as exc:  # 스코어링 파트 내부 예외 계층이 아직 없어 광범위 캐치
+        errors.append(f"scoring: {exc}")
+        return _NEUTRAL_SIGNALS, 0
+
+
+# ──────────────────────────────
+# 종합 판정 (week0 회의 기준 규칙 초안 유지)
+# ──────────────────────────────
 
 def _decide(
     vulns: list[Vulnerability],
@@ -138,19 +134,30 @@ def _decide(
     return Verdict.SAFE, reasons
 
 
-@router.post("/scan", response_model=ScanResponse, summary="패키지 통합 스캔")
-async def scan_package(req: ScanRequest) -> ScanResponse:
-    # ① CVE/OSV 매칭
-    vulns = _mock_cve_layer(req)
-    # ② 정적분석
-    findings = _mock_static_layer(req)
-    # ③ 위험도 스코어링 (real scoring layer — fetches PyPI metadata)
-    signals, risk_score = await score_package(req)
-    # 종합 판정
+# ──────────────────────────────
+# 파이프라인 (프록시에서도 재사용하므로 핸들러와 분리)
+# ──────────────────────────────
+
+async def run_scan(
+    req: ScanRequest, *, http: httpx.AsyncClient, store: ScanStore
+) -> ScanResponse:
+    layer_errors: list[str] = []
+
+    # 세 레이어는 서로 독립 — 병렬 실행 (①은 OSV, ②는 PyPI 아카이브, ③은 PyPI JSON)
+    vulns, findings, (signals, risk_score) = await asyncio.gather(
+        _layer_cve(req, http, layer_errors),
+        _layer_static(req, http, layer_errors),
+        _layer_scoring(req, layer_errors),
+    )
+
+    # CWE 태깅 (담당: API 파트) — 취약점별 OSV 재조회로 cwe_ids 를 채운다.
+    # 부가 정보라 실패는 조용히 빈 리스트로 남고 판정에는 영향 없음.
+    await tag_vulnerabilities(vulns, http)
+
     verdict, reasons = _decide(vulns, findings, risk_score)
 
-    return ScanResponse(
-        scan_id=next(_scan_id_seq),
+    response = ScanResponse(
+        scan_id=0,  # insert 후 확정
         ecosystem=req.ecosystem,
         name=req.name,
         version=req.version,
@@ -161,4 +168,48 @@ async def scan_package(req: ScanRequest) -> ScanResponse:
         vulnerabilities=vulns,
         static_findings=findings,
         risk_signals=signals,
+        layer_errors=layer_errors,
     )
+
+    record = response.model_dump(mode="json")
+    scan_id = await store.insert(record)
+    response.scan_id = record["scan_id"] = scan_id
+    await store.finalize(scan_id, record)
+    return response
+
+
+# ──────────────────────────────
+# 엔드포인트
+# ──────────────────────────────
+
+@router.post("/scan", response_model=ScanResponse, summary="패키지 통합 스캔")
+async def scan_package(req: ScanRequest, request: Request) -> ScanResponse:
+    return await run_scan(
+        req, http=request.app.state.http, store=request.app.state.store
+    )
+
+
+@router.get("/scans", response_model=list[ScanResponse], summary="최근 스캔 이력")
+async def recent_scans(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[ScanResponse]:
+    """대시보드 이력 화면용. 최신 스캔부터 내림차순."""
+    rows = await request.app.state.store.recent(limit)
+    return [ScanResponse.model_validate(r) for r in rows]
+
+
+@router.get(
+    "/scans/{scan_id}",
+    response_model=ScanResponse,
+    responses={404: {"model": ErrorResponse}},
+    summary="스캔 결과 단건 조회",
+)
+async def get_scan(scan_id: int, request: Request) -> ScanResponse:
+    row = await request.app.state.store.get(scan_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "scan_not_found", "detail": f"scan {scan_id} 없음"},
+        )
+    return ScanResponse.model_validate(row)
