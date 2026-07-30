@@ -169,7 +169,7 @@ def test_layers_share_one_package_context(client, monkeypatch):
 
 def test_offline_demo_needs_no_network(client, monkeypatch):
     """SU_OFFLINE_DEMO — 회선이 죽어도 block 판정 데모가 되는지 (레이어 미호출)."""
-    monkeypatch.setattr(scan, "_OFFLINE_DEMO", True)
+    monkeypatch.setattr(scan, "OFFLINE_DEMO", True)
     body = client.post("/api/v1/scan", json={"name": "reqeusts", "version": "1.0.0"}).json()
     assert body["verdict"] == "block"
     assert any("오프라인 데모" in r for r in body["verdict_reasons"])
@@ -265,6 +265,53 @@ def test_gate_rejects_open_proxy_abuse(client):
         "/files/x-1.0.tar.gz", params={"u": "https://evil.example.com/x-1.0.tar.gz"}
     )
     assert r.status_code == 400
+
+
+def test_demo_index_is_synthesised_offline(client, monkeypatch):
+    """데모 typosquat 이름은 PyPI 에서 삭제돼(404) 업스트림 프록시로는 시연이 안 된다.
+
+    SU_OFFLINE_DEMO 에서 인덱스를 합성해 pip 이 게이트까지 도달하는지 — 그리고 그
+    링크가 pip 계약(경로가 파일명으로 끝남)을 지키는지 확인한다.
+    """
+    monkeypatch.setattr(scan, "OFFLINE_DEMO", True)
+    r = client.get("/simple/reqeusts/")
+    assert r.status_code == 200
+
+    href = re.search(r'href="([^"]+)"', r.text).group(1)
+    parsed = urlparse(href)
+    assert parsed.path == "/files/reqeusts-1.0.0.tar.gz"
+    assert proxy.parse_archive_filename(parsed.path.rsplit("/", 1)[-1]) == (
+        "reqeusts",
+        "1.0.0",
+    )
+
+    # 합성된 링크를 그대로 따라가면 게이트가 차단해야 한다 (pip 이 하는 동작).
+    blocked = client.get(href)
+    assert blocked.status_code == 403
+    assert blocked.json()["package"] == "reqeusts==1.0.0"
+
+
+def test_demo_index_not_synthesised_when_demo_off(client, monkeypatch):
+    """데모 모드가 아니면 합성하지 않고 업스트림을 재작성한다.
+
+    실서비스에서 가짜 인덱스가 새어나가면 존재하지 않는 패키지를 존재하는 것처럼
+    광고하게 되므로, 합성은 SU_OFFLINE_DEMO 로 확실히 격리돼야 한다.
+    """
+    monkeypatch.setattr(scan, "OFFLINE_DEMO", False)
+    monkeypatch.setattr(proxy, "demo_index_html", lambda *a, **k: "SYNTHETIC")
+
+    upstream_html = ('<a href="https://files.pythonhosted.org/packages/aa/bb/'
+                     'reqeusts-9.9.9.tar.gz">reqeusts-9.9.9.tar.gz</a>')
+
+    async def fake_get(url, **kwargs):
+        return httpx.Response(200, text=upstream_html, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(client.app.state.http, "get", fake_get)
+
+    r = client.get("/simple/reqeusts/")
+    assert r.status_code == 200
+    assert "SYNTHETIC" not in r.text
+    assert "/files/reqeusts-9.9.9.tar.gz?u=" in r.text  # 업스트림 링크를 재작성한 결과
 
 
 def test_gate_rejects_filename_mismatch(client, monkeypatch):

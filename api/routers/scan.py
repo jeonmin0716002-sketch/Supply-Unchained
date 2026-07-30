@@ -67,7 +67,9 @@ _NEUTRAL_SIGNALS = RiskSignals(
     release_burst=False,
 )
 
-_OFFLINE_DEMO = os.getenv("SU_OFFLINE_DEMO", "").strip().lower() in {"1", "true", "yes"}
+#: 공개 이름인 이유: pip 프록시(api/routers/proxy.py)도 이 값을 읽어 데모용 인덱스
+#: 페이지를 합성한다. 데모 판정 규칙이 두 군데로 흩어지지 않게 여기 한 곳에 둔다.
+OFFLINE_DEMO = os.getenv("SU_OFFLINE_DEMO", "").strip().lower() in {"1", "true", "yes"}
 
 
 # ──────────────────────────────
@@ -112,8 +114,8 @@ async def _layer_scoring(
 # ──────────────────────────────
 
 # 패키지 이름에 따라 3가지 판정을 재현
-_DEMO_MALICIOUS = {"reqeusts", "colourama", "python-sqlite"}   # typosquat 흉내
-_DEMO_VULNERABLE = {"requests"}                                # 알려진 CVE 보유 흉내
+DEMO_MALICIOUS = {"reqeusts", "colourama", "python-sqlite"}   # typosquat 흉내
+DEMO_VULNERABLE = {"requests"}                                # 알려진 CVE 보유 흉내
 
 _DEMO_NOTE = "⚠️ 오프라인 데모 모드 (SU_OFFLINE_DEMO) — mock 데이터입니다"
 
@@ -124,7 +126,7 @@ def _demo_layers(
     vulns: list[Vulnerability] = []
     findings: list[StaticFinding] = []
 
-    if req.name in _DEMO_VULNERABLE:
+    if req.name in DEMO_VULNERABLE:
         vulns = [
             Vulnerability(
                 source=VulnSource.OSV,
@@ -135,7 +137,7 @@ def _demo_layers(
             )
         ]
 
-    if req.name in _DEMO_MALICIOUS:
+    if req.name in DEMO_MALICIOUS:
         findings = [
             StaticFinding(
                 rule="custom-pth",
@@ -221,7 +223,7 @@ async def run_scan(
     layer_errors: list[str] = []
     notes: list[str] = []
 
-    if _OFFLINE_DEMO:
+    if OFFLINE_DEMO:
         vulns, findings, (signals, risk_score) = _demo_layers(req)
         notes.append(_DEMO_NOTE)
     else:

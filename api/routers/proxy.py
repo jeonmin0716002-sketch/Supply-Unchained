@@ -30,6 +30,7 @@ from urllib.parse import quote, unquote, urlparse
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from api.routers import scan as scan_layer
 from api.routers.scan import run_scan
 from api.schemas import ScanRequest, Verdict
 
@@ -86,9 +87,42 @@ def rewrite_index_html(html: str, base_path: str = "/files") -> str:
     return _HREF_RE.sub(_sub, _METADATA_ATTR_RE.sub("", html))
 
 
+# ──────────────────────────────
+# 오프라인 데모용 인덱스 합성
+# ──────────────────────────────
+#
+# 데모용 typosquat 이름들(scan.DEMO_MALICIOUS)은 실제 악성 패키지였기에 PyPI 에서 이미
+# 삭제됐다 — /simple/reqeusts/ 는 404 다. 그래서 업스트림을 프록시하는 정상 경로로는
+# "pip install 이 차단되는" 장면을 시연할 수 없다(인덱스 단계에서 이미 죽으므로 게이트까지
+# 도달조차 못 한다). SU_OFFLINE_DEMO 에서는 그 이름들의 인덱스 페이지를 합성해 pip 을
+# 게이트까지 보내고, 판정은 scan 레이어의 데모 mock 이 block 을 낸다.
+#
+# 합성 링크의 u= 는 실제로 조회되지 않는다: 데모 대상은 전부 block 이라 스트리밍 이전에
+# 403 으로 끝난다. 호스트를 files.pythonhosted.org 로 두는 것은 게이트의 호스트 검사를
+# 통과시키기 위한 것이다.
+
+DEMO_VERSION = "1.0.0"
+
+
+def demo_index_html(name: str, base_path: str = "/files") -> str:
+    """데모 패키지용 PEP 503 인덱스 페이지 합성 (네트워크 불필요)."""
+    filename = f"{name}-{DEMO_VERSION}.tar.gz"
+    upstream = f"https://files.pythonhosted.org/packages/su-demo/{filename}"
+    return (
+        "<!DOCTYPE html>\n<html><body>\n"
+        f"<h1>Links for {name}</h1>\n"
+        f'<a href="{base_path}/{quote(filename)}?u={quote(upstream, safe="")}">'
+        f"{filename}</a><br />\n"
+        "</body></html>\n"
+    )
+
+
 @router.get("/simple/", summary="pip simple 인덱스 루트 (프록시)")
 @router.get("/simple/{name}/", summary="패키지 인덱스 페이지 (프록시 + 링크 재작성)")
 async def simple_index(request: Request, name: str | None = None) -> Response:
+    if name and scan_layer.OFFLINE_DEMO and name in scan_layer.DEMO_MALICIOUS:
+        return Response(content=demo_index_html(name), media_type="text/html")
+
     http = request.app.state.http
     upstream = f"{UPSTREAM_SIMPLE}/{name}/" if name else f"{UPSTREAM_SIMPLE}/"
     # PEP 691(JSON) 대신 HTML v1 을 요청 — 재작성 로직을 한 포맷으로 유지
