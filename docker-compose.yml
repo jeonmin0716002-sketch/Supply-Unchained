@@ -1,0 +1,18 @@
+services:
+  api:
+    build: .
+    container_name: supply-unchained
+    ports:
+      - "8000:8000"
+    environment:
+      SU_DB_PATH: /data/supply_unchained.db
+    volumes:
+      - su-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  su-data:
