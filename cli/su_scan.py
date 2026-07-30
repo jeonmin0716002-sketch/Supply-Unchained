@@ -25,6 +25,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+# Windows 기본 콘솔 코드페이지(한국어 환경은 cp949)는 판정 이모지 ⚠️/✅/⛔ 를 인코딩할
+# 수 없어, rich 가 출력하는 순간 UnicodeEncodeError 로 죽는다 — 즉 check/install 이 통째로
+# 사용 불가였다. 출력 스트림을 UTF-8 로 올려서 해결한다 (errors="replace" 는 그래도 못 쓰는
+# 글리프가 남는 콘솔에서 크래시 대신 대체문자를 쓰게 하는 마지막 안전망).
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure") and (_stream.encoding or "").lower().replace(
+        "-", ""
+    ) not in ("utf8", "utf8sig"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 app = typer.Typer(help="Supply-Unchained — pip 설치 전 공급망 스캔", no_args_is_help=True)
 console = Console()
 
@@ -36,6 +46,11 @@ _VERDICT_STYLE = {
     "warn": ("⚠️  WARN", "yellow"),
     "block": ("⛔ BLOCK", "red"),
 }
+
+
+def _style(verdict: str) -> tuple[str, str]:
+    """판정의 (라벨, 색). 판정값이 늘어나도 KeyError 로 죽지 않게 기본값을 둔다."""
+    return _VERDICT_STYLE.get(verdict, (verdict.upper(), "white"))
 
 
 def _api_url() -> str:
@@ -77,13 +92,19 @@ def _scan(name: str, version: str) -> dict:
     if resp.status_code == 422:
         console.print(f"[red]잘못된 요청:[/red] {resp.json()}")
         raise typer.Exit(code=2)
-    resp.raise_for_status()
+    # raise_for_status 가 던지는 HTTPStatusError 는 위 except 의 HTTPError 서브클래스지만
+    # try 블록 밖이라 그대로 새어나가 raw traceback 이 됐다 — 여기서 받아서 메시지로 바꾼다.
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        console.print(f"[red]API 오류 {resp.status_code}:[/red] {resp.text[:300]}")
+        raise typer.Exit(code=2) from exc
     return resp.json()
 
 
 def _render(result: dict) -> None:
     verdict = result["verdict"]
-    label, color = _VERDICT_STYLE[verdict]
+    label, color = _style(verdict)
     pkg = f"{result['name']}=={result['version']}"
 
     lines = [f"[bold]{pkg}[/bold]   위험도 [bold]{result['risk_score']}[/bold]/100"]
@@ -183,7 +204,7 @@ def history(limit: int = typer.Option(20, help="가져올 개수")) -> None:
     for col in ("id", "패키지", "판정", "점수", "시각"):
         t.add_column(col)
     for r in resp.json():
-        _label, color = _VERDICT_STYLE[r["verdict"]]
+        _label, color = _style(r["verdict"])
         t.add_row(
             str(r["scan_id"]),
             f"{r['name']}=={r['version']}",

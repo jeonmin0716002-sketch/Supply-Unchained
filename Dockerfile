@@ -12,6 +12,7 @@ RUN uv sync --frozen --no-dev
 
 # 애플리케이션 코드
 COPY api/ api/
+COPY common/ common/
 COPY engine/ engine/
 COPY scoring/ scoring/
 COPY cli/ cli/

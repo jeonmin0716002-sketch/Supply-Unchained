@@ -59,12 +59,17 @@ class ScanStore:
 
     def _connect(self) -> sqlite3.Connection:
         Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self._path)
+        # pip 프록시 게이트가 살아나면서 병렬 다운로드마다 스캔+쓰기가 동시에 들어온다.
+        # 기본 busy timeout 만으로는 "database is locked" 가 바로 나므로 명시적으로 준다.
+        conn = sqlite3.connect(self._path, timeout=15.0)
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init(self) -> None:
         with self._connect() as conn:
+            # WAL 은 DB 파일에 한 번 기록되면 유지되는 설정이라 init 에서만 켜면 된다.
+            # 읽기(대시보드 이력)가 쓰기(진행 중 스캔)를 막지 않게 하는 것이 목적.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
 
     def _insert(self, record: dict) -> int:

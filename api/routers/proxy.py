@@ -5,9 +5,11 @@
     pip install --index-url http://localhost:8000/simple/ reqeusts
 
     1. pip 이 /simple/reqeusts/ 요청 → 프록시가 pypi.org/simple 원본을 가져와
-       파일 링크(files.pythonhosted.org)를 전부 /files?u=<원본URL> 로 재작성해 반환.
-       (#sha256=... 프래그먼트는 보존 — pip 의 해시 검증은 그대로 동작)
-    2. pip 이 버전을 결정하고 /files?u=... 로 실제 아카이브를 요청.
+       파일 링크(files.pythonhosted.org)를 전부
+       /files/<파일명>?u=<원본URL> 로 재작성해 반환.
+       (#sha256=... 프래그먼트는 보존 — pip 의 해시 검증은 그대로 동작.
+        파일명을 경로에 남기는 이유는 rewrite_index_html docstring 참고)
+    2. pip 이 버전을 결정하고 /files/<파일명>?u=... 로 실제 아카이브를 요청.
        이 시점에는 파일명에 정확한 버전이 있으므로, **다운로드를 열어주기 전에**
        해당 name==version 을 통합 스캔에 태운다.
     3. verdict 가 block 이면 403 + 판정 근거 반환 → pip 설치 실패로 이어짐.
@@ -39,6 +41,14 @@ ALLOWED_FILE_HOSTS = {"files.pythonhosted.org"}
 
 _HREF_RE = re.compile(r'href="(?P<url>https://files\.pythonhosted\.org/[^"#]+)(?P<frag>#[^"]*)?"')
 
+#: PEP 658/714 메타데이터 광고 속성. 이게 남아 있으면 pip 은 아카이브를 받지 않고
+#: "링크 URL 문자열 끝에 ``.metadata`` 를 붙여" 별도 요청을 보낸다. 우리 링크는 원본 URL 을
+#: 쿼리에 담으므로 그 접미사가 쿼리 값 안으로 들어가 깨진다(실제 pip 에서 400 확인).
+#: 속성을 떼면 pip 은 아카이브를 직접 받으며, 이는 게이트 입장에선 오히려 바람직하다 —
+#: 모든 다운로드가 예외 없이 스캔을 거친다. (해결책이 필요하면 .metadata 요청을
+#: 별도 경로로 프록시하는 방식이 있으나 MVP 범위 밖.)
+_METADATA_ATTR_RE = re.compile(r'\s+data-(?:core-metadata|dist-info-metadata)="[^"]*"')
+
 # 파일명 → (name, version) 파싱
 #   wheel : {name}-{version}(-{build})?-{python}-{abi}-{platform}.whl  (PEP 427)
 #   sdist : {name}-{version}.tar.gz | .zip
@@ -55,14 +65,25 @@ def parse_archive_filename(filename: str) -> tuple[str, str] | None:
 
 
 def rewrite_index_html(html: str, base_path: str = "/files") -> str:
-    """simple 인덱스 HTML의 파일 링크를 프록시 게이트 경로로 재작성."""
+    """simple 인덱스 HTML의 파일 링크를 프록시 게이트 경로로 재작성.
+
+    **파일명은 반드시 경로 마지막 세그먼트에 남긴다.** pip 은 링크의 *경로*에서
+    파일명을 뽑아 패키지명·버전·wheel 태그를 판단하기 때문이다. 원본 URL 을 쿼리에만
+    담아 경로가 ``/files`` 로 끝나면 pip 은 모든 링크를 ``Skipping link: not a file``
+    로 버리고 "from versions: none" 을 낸다 (실제 pip 으로 확인).
+
+        https://files.pythonhosted.org/packages/../six-1.16.0.tar.gz#sha256=..
+        → /files/six-1.16.0.tar.gz?u=<원본URL 인코딩>#sha256=..
+    """
 
     def _sub(m: re.Match) -> str:
-        url = quote(m.group("url"), safe="")
+        url = m.group("url")
+        filename = url.rsplit("/", 1)[-1]
         frag = m.group("frag") or ""
-        return f'href="{base_path}?u={url}{frag}"'
+        # 순서 주의: 경로 → 쿼리 → 프래그먼트. 해시 검증 프래그먼트는 맨 뒤에 와야 한다.
+        return f'href="{base_path}/{quote(filename)}?u={quote(url, safe="")}{frag}"'
 
-    return _HREF_RE.sub(_sub, html)
+    return _HREF_RE.sub(_sub, _METADATA_ATTR_RE.sub("", html))
 
 
 @router.get("/simple/", summary="pip simple 인덱스 루트 (프록시)")
@@ -85,14 +106,26 @@ async def simple_index(request: Request, name: str | None = None) -> Response:
     )
 
 
-@router.get("/files", summary="아카이브 다운로드 게이트 (스캔 후 통과/차단)")
-async def gated_file(request: Request, u: str = Query(description="원본 파일 URL")) -> Response:
+@router.get("/files/{filename}", summary="아카이브 다운로드 게이트 (스캔 후 통과/차단)")
+async def gated_file(
+    request: Request,
+    filename: str,
+    u: str = Query(description="원본 파일 URL"),
+) -> Response:
     upstream_url = unquote(u)
     parsed = urlparse(upstream_url)
     if parsed.scheme != "https" or parsed.hostname not in ALLOWED_FILE_HOSTS:
         raise HTTPException(status_code=400, detail="disallowed upstream host")
 
-    filename = parsed.path.rsplit("/", 1)[-1]
+    # 경로의 파일명이 판정 대상을 결정하므로, 업스트림 파일명과 반드시 일치해야 한다.
+    # 어긋나면 "안전한 A 를 스캔받고 악성 B 를 내려받는" 게이트 우회가 가능해진다.
+    upstream_filename = parsed.path.rsplit("/", 1)[-1]
+    if filename != upstream_filename:
+        raise HTTPException(
+            status_code=400,
+            detail=f"filename mismatch: path={filename!r} upstream={upstream_filename!r}",
+        )
+
     parsed_name = parse_archive_filename(filename)
 
     if parsed_name is not None:

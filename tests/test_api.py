@@ -6,6 +6,9 @@ history endpoints, proxy link rewriting, and the download gate blocking flow.
 
 from __future__ import annotations
 
+import re
+from urllib.parse import parse_qs, urlparse
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -198,8 +201,41 @@ def test_index_link_rewrite():
     html = ('<a href="https://files.pythonhosted.org/packages/aa/bb/x-1.0.tar.gz'
             '#sha256=deadbeef">x-1.0.tar.gz</a>')
     out = proxy.rewrite_index_html(html)
-    assert 'href="/files?u=https%3A%2F%2Ffiles.pythonhosted.org' in out
+    assert 'href="/files/x-1.0.tar.gz?u=https%3A%2F%2Ffiles.pythonhosted.org' in out
     assert out.endswith('#sha256=deadbeef">x-1.0.tar.gz</a>')  # 해시 검증 프래그먼트 보존
+
+
+def test_rewritten_link_keeps_filename_in_path():
+    """pip 계약: 재작성된 링크의 *경로*가 아카이브 파일명으로 끝나야 한다.
+
+    원본 URL 을 쿼리에만 담으면 pip 이 경로에서 파일명을 못 뽑아
+    ``Skipping link: not a file`` 로 전 링크를 버리고 "from versions: none" 이 된다
+    (실제 pip 으로 재현됨). 문자열 모양 대신 이 계약 자체를 검증한다.
+    """
+    html = ('<a href="https://files.pythonhosted.org/packages/aa/bb/'
+            'scikit_learn-1.5.0-cp312-cp312-win_amd64.whl#sha256=beef">x</a>')
+    href = re.search(r'href="([^"]+)"', proxy.rewrite_index_html(html)).group(1)
+    parsed = urlparse(href)
+
+    filename = parsed.path.rsplit("/", 1)[-1]
+    assert filename == "scikit_learn-1.5.0-cp312-cp312-win_amd64.whl"
+    # pip 은 이 파일명에서 버전과 wheel 태그를 읽는다 — 우리 파서도 읽을 수 있어야 한다.
+    assert proxy.parse_archive_filename(filename) == ("scikit_learn", "1.5.0")
+    assert parse_qs(parsed.query)["u"][0].startswith("https://files.pythonhosted.org/")
+    assert parsed.fragment == "sha256=beef"  # 해시 검증은 프래그먼트에 남아야 한다
+
+
+def test_metadata_attribute_is_stripped():
+    """PEP 658 광고 속성 제거 — 남기면 pip 이 URL 끝에 '.metadata' 를 붙여 깨진다.
+
+    pip 은 링크 URL '문자열' 뒤에 접미사를 붙이므로, 원본 URL 이 쿼리에 있는 우리
+    링크에서는 그 접미사가 쿼리 값 안으로 들어가 게이트가 400 을 낸다(실제 pip 재현).
+    """
+    html = ('<a href="https://files.pythonhosted.org/packages/aa/bb/x-1.0-py3-none-any.whl"'
+            ' data-core-metadata="sha256=abc" data-requires-python="&gt;=3.8">x</a>')
+    out = proxy.rewrite_index_html(html)
+    assert "data-core-metadata" not in out
+    assert "data-requires-python" in out  # 버전 해석에 필요한 속성은 보존
 
 
 @pytest.mark.parametrize(
@@ -218,14 +254,28 @@ def test_parse_archive_filename(filename, expected):
 def test_gate_blocks_malicious(client, monkeypatch):
     _patch_layers(monkeypatch, findings=[PTH_FINDING], signals=BAD_SIGNALS, score=90)
     url = "https%3A%2F%2Ffiles.pythonhosted.org%2Fpackages%2Fx%2Freqeusts-1.0.0.tar.gz"
-    r = client.get(f"/files?u={url}")
+    r = client.get(f"/files/reqeusts-1.0.0.tar.gz?u={url}")
     assert r.status_code == 403
     assert r.json()["error"] == "blocked_by_supply_unchained"
     assert r.json()["package"] == "reqeusts==1.0.0"
 
 
 def test_gate_rejects_open_proxy_abuse(client):
-    r = client.get("/files", params={"u": "https://evil.example.com/x-1.0.tar.gz"})
+    r = client.get(
+        "/files/x-1.0.tar.gz", params={"u": "https://evil.example.com/x-1.0.tar.gz"}
+    )
+    assert r.status_code == 400
+
+
+def test_gate_rejects_filename_mismatch(client, monkeypatch):
+    """경로 파일명 ≠ 업스트림 파일명이면 거부.
+
+    허용하면 "안전한 A 를 스캔받고 악성 B 를 내려받는" 게이트 우회가 성립한다 —
+    판정 대상을 경로 파일명이 결정하기 때문.
+    """
+    _patch_layers(monkeypatch)
+    url = "https%3A%2F%2Ffiles.pythonhosted.org%2Fpackages%2Fx%2Freqeusts-1.0.0.tar.gz"
+    r = client.get(f"/files/six-1.16.0.tar.gz?u={url}")
     assert r.status_code == 400
 
 
