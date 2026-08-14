@@ -190,6 +190,62 @@ def install(
     raise typer.Exit(code=subprocess.call(cmd))
 
 
+@app.command("check-file")
+def check_file(
+    path: str = typer.Argument("requirements.txt", help="requirements 파일 경로"),
+) -> None:
+    """requirements.txt 전체를 스캔 — block 이 하나라도 있으면 exit 1.
+
+    CI/CD 게이트용 (.github/workflows/supply-chain-scan.yml 에서 호출).
+    `name==version` 형태의 줄만 검사하고 주석·빈 줄·기타 지정자는 건너뛴다.
+    미검증 패키지를 설치하지 않는다 — 스캔 결과만으로 판단한다.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        console.print(f"[red]파일을 찾을 수 없습니다:[/red] {path}")
+        raise typer.Exit(code=2) from None
+
+    results: list[tuple[str, str, dict]] = []
+    skipped: list[str] = []
+    for line in lines:
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        if "==" not in stripped:
+            skipped.append(stripped)
+            continue
+        name, version = _parse_spec(stripped)
+        if not version:
+            skipped.append(stripped)
+            continue
+        results.append((name, version, _scan(name, version)))
+
+    t = Table(title=f"{path} — {len(results)}개 패키지 스캔", title_justify="left")
+    for col in ("패키지", "판정", "점수", "사유"):
+        t.add_column(col)
+    blocked = 0
+    for name, version, r in results:
+        _label, color = _style(r["verdict"])
+        if r["verdict"] == "block":
+            blocked += 1
+        t.add_row(
+            f"{name}=={version}",
+            f"[{color}]{r['verdict']}[/{color}]",
+            str(r["risk_score"]),
+            "; ".join(r.get("verdict_reasons") or []) or "-",
+        )
+    console.print(t)
+    if skipped:
+        console.print(f"[dim]건너뜀 (==핀 아님): {', '.join(skipped)}[/dim]")
+
+    if blocked:
+        console.print(f"[red]⛔ 차단 판정 {blocked}건 — 게이트를 통과할 수 없습니다.[/red]")
+        raise typer.Exit(code=1)
+    console.print("[green]✅ 모든 패키지 통과.[/green]")
+
+
 @app.command()
 def history(limit: int = typer.Option(20, help="가져올 개수")) -> None:
     """최근 스캔 이력 (API의 SQLite 저장분)."""

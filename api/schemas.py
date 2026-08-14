@@ -7,10 +7,11 @@ README 초안 스키마를 기반으로, 팀 합의가 필요한 지점을 보�
 - 각 레이어(engine / scoring) 결과를 명확히 분리 → 3파트 병렬 개발 시 계약(contract) 역할
 """
 
+import re
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ──────────────────────────────
 # 공통 Enum
@@ -45,6 +46,21 @@ class VulnSource(str, Enum):
 # Request
 # ──────────────────────────────
 
+# --- Secure Design: 입력값 화이트리스트 검증 (Command Injection 원천 차단) ---
+#
+# 패키지명/버전은 이후 여러 레이어를 타고 흐른다: PyPI URL 조립(common/pypi.py),
+# OSV 쿼리, CLI 의 `pip install` subprocess 인자, 프록시 게이트의 파일명 파싱.
+# subprocess 는 shell=False 리스트 호출이라 당장 인젝션이 성립하진 않지만,
+# 시스템이 확장될수록(셸 스크립트 훅, 로그 파이프라인 등) 어떤 싱크가 생길지
+# 모르므로 입구에서 화이트리스트로 잘라내는 게 defense-in-depth 의 기본이다.
+#
+# 이름: PEP 503 정규화 규칙 그대로 — 영숫자로 시작/끝, 중간에 . _ - 만 허용.
+# 버전: PEP 440 이 쓰는 문자만 — 영숫자 토큰을 . _ + ! - 로 연결한 형태.
+#       (예: 2.31.0 / 4.0.0rc1 / 1!2.0 / 1.0.0+cpu — 셸 메타문자·공백·따옴표는 전부 거부)
+_PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9]+(?:[._+!-][A-Za-z0-9]+)*$")
+
+
 class ScanRequest(BaseModel):
     ecosystem: Ecosystem = Field(
         default=Ecosystem.PIP,
@@ -58,9 +74,29 @@ class ScanRequest(BaseModel):
     )
     version: str = Field(
         min_length=1,
+        max_length=64,
         description="패키지 버전 (정확한 버전 문자열)",
         examples=["2.31.0"],
     )
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        if not _PACKAGE_NAME_RE.match(v):
+            raise ValueError(
+                "패키지명은 영숫자로 시작·끝나고 중간에 . _ - 만 쓸 수 있습니다 "
+                "(PEP 503 — Command Injection 방지)"
+            )
+        return v
+
+    @field_validator("version")
+    @classmethod
+    def _validate_version(cls, v: str) -> str:
+        if not _VERSION_RE.match(v):
+            raise ValueError(
+                "버전은 영숫자와 . _ + ! - 만 쓸 수 있습니다 (PEP 440 문자셋)"
+            )
+        return v
 
     model_config = {
         "json_schema_extra": {

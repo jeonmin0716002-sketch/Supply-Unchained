@@ -1,0 +1,73 @@
+# 공급망 게이트 — requirements.txt 를 스캔해서 block 패키지가 있으면 PR 을 막는다.
+#
+# 설계 원칙 (재웅 파트 · Secure CI/CD):
+#   1) 미검증 패키지를 절대 `pip install` 하지 않는다 — 스캔 결과만으로 판단.
+#      (미검증 패키지를 CI 러너에서 설치·실행하는 것 자체가 공급망 공격 벡터가 된다.
+#       이 프로젝트의 메시지 "설치되기 전에 끊어낸다" 를 CI에서도 지키는 것.)
+#   2) CI 는 SU_OFFLINE_DEMO=1 로 돈다 — 외부 API(OSV/PyPI) 장애·rate limit 에
+#      영향받지 않는 결정적(deterministic) 게이트 검증. 데모 mock 이 내는 판정으로
+#      "게이트가 실제로 차단하는가" 라는 배선 자체를 매 PR마다 증명한다.
+#
+# 실서비스에서 진짜 스캔으로 게이트를 걸려면 SU_OFFLINE_DEMO 를 빼고
+# check-file 스텝을 그대로 쓰면 된다 (아래 '실사용 예시' 주석 참고).
+name: Supply-Chain Scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Start API (offline demo mode)
+        env:
+          SU_OFFLINE_DEMO: "1"
+        run: |
+          nohup uv run uvicorn api.main:app --port 8000 > uvicorn.log 2>&1 &
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8000/health && break
+            sleep 0.5
+          done
+
+      - name: Gate must BLOCK the malicious sample
+        # samples/demo_requirements.txt 에는 typosquat 데모 패키지(reqeusts)가 있다.
+        # check-file 이 정확히 exit 1 (차단) 을 반환해야 게이트가 살아있는 것.
+        # exit 0 (통과) 은 게이트 사망, exit 2 (연결 실패 등) 는 환경 문제 —
+        # 둘을 구분하지 않으면 "서버가 안 떠서 난 에러"를 차단 성공으로 오인한다.
+        run: |
+          set +e
+          uv run python -m cli.su_scan check-file samples/demo_requirements.txt
+          code=$?
+          set -e
+          if [ "$code" -eq 1 ]; then
+            echo "게이트가 정상적으로 차단함 (exit 1)"
+          elif [ "$code" -eq 0 ]; then
+            echo "::error::게이트가 악성 샘플을 차단하지 못했습니다"
+            exit 1
+          else
+            echo "::error::스캔 실행 실패 (exit $code) — 서버 기동/연결 확인 필요"
+            exit 1
+          fi
+
+      - name: Gate must PASS a clean file
+        run: uv run python -m cli.su_scan check-file samples/clean_requirements.txt
+
+      - name: Server log (on failure)
+        if: failure()
+        run: cat uvicorn.log
+
+      # ── 실사용 예시 (실제 스캔으로 이 레포의 requirements 게이트) ──
+      # - name: Scan real requirements
+      #   run: uv run python -m cli.su_scan check-file requirements.txt

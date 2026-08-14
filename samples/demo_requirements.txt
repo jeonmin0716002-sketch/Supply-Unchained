@@ -1,0 +1,4 @@
+# CI 게이트 데모용 — SU_OFFLINE_DEMO 모드의 mock 판정 트리거
+# (reqeusts 는 실존했던 typosquat 악성 패키지 이름 — 데모 mock 이 block 을 낸다)
+requests==2.31.0
+reqeusts==1.0.0
