@@ -36,6 +36,7 @@ jobs:
           SU_OFFLINE_DEMO: "1"
         run: |
           nohup uv run uvicorn api.main:app --port 8000 > uvicorn.log 2>&1 &
+          echo $! > uvicorn.pid
           for i in $(seq 1 20); do
             curl -sf http://localhost:8000/health && break
             sleep 0.5
@@ -67,6 +68,17 @@ jobs:
       - name: Server log (on failure)
         if: failure()
         run: cat uvicorn.log
+
+      - name: Stop API
+        # nohup 으로 띄운 서버가 job 종료 후에도 UV_CACHE_DIR 을 물고 있으면,
+        # setup-uv 의 post-job cache prune 스텝이 락 경합으로 멈췄다가 타임아웃(5분)
+        # 후 exit 2 로 죽는다 — 실제로 이 job 을 5분 넘게 실패시킨 원인이었다.
+        # if: always() 로 이전 스텝이 실패해도 반드시 정리한다.
+        if: always()
+        run: |
+          if [ -f uvicorn.pid ]; then
+            kill "$(cat uvicorn.pid)" 2>/dev/null || true
+          fi
 
       # ── 실사용 예시 (실제 스캔으로 이 레포의 requirements 게이트) ──
       # - name: Scan real requirements
