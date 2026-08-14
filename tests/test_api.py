@@ -17,7 +17,14 @@ from api import cwe
 from api.cwe import UNKNOWN_CWE, cwe_for_bandit
 from api.main import app
 from api.routers import proxy, scan
-from api.schemas import RiskSignals, Severity, StaticFinding, Vulnerability, VulnSource
+from api.schemas import (
+    RiskSignals,
+    ScanRequest,
+    Severity,
+    StaticFinding,
+    Vulnerability,
+    VulnSource,
+)
 from common.pypi import PyPIError
 
 SAFE_SIGNALS = RiskSignals(
@@ -62,18 +69,24 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def _patch_layers(monkeypatch, *, vulns=(), findings=(), signals=SAFE_SIGNALS, score=5):
+def _patch_layers(
+    monkeypatch, *, vulns=(), findings=(), bandit_findings=(), signals=SAFE_SIGNALS, score=5
+):
     async def fake_cve(req, http, errors):
         return list(vulns)
 
     async def fake_static(req, ctx, errors):
         return list(findings)
 
+    async def fake_bandit(req, ctx, errors):
+        return list(bandit_findings)
+
     async def fake_scoring(req, ctx, errors):
         return signals, score
 
     monkeypatch.setattr(scan, "_layer_cve", fake_cve)
     monkeypatch.setattr(scan, "_layer_static", fake_static)
+    monkeypatch.setattr(scan, "_layer_bandit", fake_bandit)
     monkeypatch.setattr(scan, "_layer_scoring", fake_scoring)
 
 
@@ -129,6 +142,9 @@ def test_static_layer_converts_fetch_error(client, monkeypatch):
     async def fake_cve(req, http, errors):
         return []
 
+    async def fake_bandit(req, ctx, errors):
+        return []
+
     async def fake_scoring(req, ctx, errors):
         return SAFE_SIGNALS, 5
 
@@ -136,6 +152,7 @@ def test_static_layer_converts_fetch_error(client, monkeypatch):
         raise PyPIError("ghost-pkg is not on PyPI")
 
     monkeypatch.setattr(scan, "_layer_cve", fake_cve)
+    monkeypatch.setattr(scan, "_layer_bandit", fake_bandit)
     monkeypatch.setattr(scan, "_layer_scoring", fake_scoring)
     monkeypatch.setattr(scan, "analyze_package", boom)
 
@@ -145,7 +162,7 @@ def test_static_layer_converts_fetch_error(client, monkeypatch):
 
 
 def test_layers_share_one_package_context(client, monkeypatch):
-    """②③ 가 같은 PackageContext 를 받는지 — PyPI 중복 조회 방지의 핵심 계약."""
+    """②②'③ 가 같은 PackageContext 를 받는지 — PyPI 중복 조회 방지의 핵심 계약."""
     seen = []
 
     async def fake_cve(req, http, errors):
@@ -155,16 +172,21 @@ def test_layers_share_one_package_context(client, monkeypatch):
         seen.append(ctx)
         return []
 
+    async def fake_bandit(req, ctx, errors):
+        seen.append(ctx)
+        return []
+
     async def fake_scoring(req, ctx, errors):
         seen.append(ctx)
         return SAFE_SIGNALS, 5
 
     monkeypatch.setattr(scan, "_layer_cve", fake_cve)
     monkeypatch.setattr(scan, "_layer_static", fake_static)
+    monkeypatch.setattr(scan, "_layer_bandit", fake_bandit)
     monkeypatch.setattr(scan, "_layer_scoring", fake_scoring)
 
     client.post("/api/v1/scan", json={"name": "httpx", "version": "0.27.0"})
-    assert len(seen) == 2 and seen[0] is seen[1]
+    assert len(seen) == 3 and seen[0] is seen[1] is seen[2]
 
 
 def test_offline_demo_needs_no_network(client, monkeypatch):
@@ -324,6 +346,53 @@ def test_gate_rejects_filename_mismatch(client, monkeypatch):
     url = "https%3A%2F%2Ffiles.pythonhosted.org%2Fpackages%2Fx%2Freqeusts-1.0.0.tar.gz"
     r = client.get(f"/files/six-1.16.0.tar.gz?u={url}")
     assert r.status_code == 400
+
+
+# ──────────────────────────────
+# Bandit 레이어 (재웅 담당분)
+# ──────────────────────────────
+
+def test_run_bandit_caps_high_severity_to_medium(tmp_path):
+    """Bandit 은 HIGH 를 매기지만, 오탐률을 실측하기 전까지는 여기서 MEDIUM 으로 눌러야 한다.
+
+    풀어주면 _decide() 가 risk_score 와 무관하게 무조건 block 해버려서, 커스텀 룰이
+    requests 의 os.system() 을 일부러 MEDIUM 으로 낮췄던 것과 같은 오차단이 재현된다.
+    """
+    (tmp_path / "mod.py").write_text("import ftplib\n", encoding="utf-8")
+    findings = scan._run_bandit(tmp_path)
+
+    assert findings, "ftplib import 는 bandit 이 B402 HIGH 로 잡아야 한다"
+    finding = next(f for f in findings if f.rule == "B402")
+    assert finding.cwe.startswith("CWE-")
+    assert finding.severity == Severity.MEDIUM  # HIGH -> 캡 확인
+    assert finding.location.startswith("mod.py:")  # 절대경로가 아니라 상대경로
+
+
+async def test_layer_bandit_survives_errors():
+    """PackageContext.extracted_path 가 예외를 던져도 스캔 전체가 죽지 않고
+    layer_errors 로 강등되는지 — 다른 레이어들과 동일한 부분 실패 정책.
+    """
+
+    class BoomCtx:
+        async def extracted_path(self):
+            raise RuntimeError("boom")
+
+    errors: list[str] = []
+    result = await scan._layer_bandit(ScanRequest(name="x", version="1"), BoomCtx(), errors)
+    assert result == []
+    assert errors and errors[0].startswith("bandit:")
+
+
+def test_scan_merges_bandit_findings_with_static(client, monkeypatch):
+    bandit_finding = StaticFinding(
+        rule="B402", cwe="CWE-829", severity=Severity.MEDIUM,
+        location="mod.py:1", detail="A telnetlib import was detected.",
+    )
+    _patch_layers(monkeypatch, findings=[PTH_FINDING], bandit_findings=[bandit_finding])
+    body = client.post("/api/v1/scan", json={"name": "reqeusts", "version": "1.0.0"}).json()
+    rules = {f["rule"] for f in body["static_findings"]}
+    assert rules == {"custom-pth", "B402"}
+    assert body["verdict"] == "block"  # PTH_FINDING(HIGH) 하나로도 여전히 block
 
 
 # ──────────────────────────────
