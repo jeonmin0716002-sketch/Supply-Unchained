@@ -1,0 +1,3 @@
+# CI 게이트 데모용 — 전부 통과해야 하는 정상 파일
+certifi==2024.2.2
+typing_extensions==4.12.0
