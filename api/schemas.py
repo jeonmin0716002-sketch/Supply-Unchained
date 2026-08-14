@@ -84,6 +84,13 @@ class Vulnerability(BaseModel):
     fixed_version: str | None = Field(
         default=None, description="패치된 버전 (있으면 사용자에게 업그레이드 안내)"
     )
+    # CWE 태깅 담당 조정에 따라 추가 (팀 리뷰 대상): 취약점은 CWE가 여러 개일 수
+    # 있어 static_findings[].cwe(단수)와 달리 리스트. OSV의 database_specific.cwe_ids
+    # 에서 채워지며, 광고문에 CWE가 없으면 빈 리스트 (PYSEC 계열 등).
+    cwe_ids: list[str] = Field(
+        default_factory=list,
+        description="이 취약점에 태깅된 CWE 목록 (예: ['CWE-522'])",
+    )
 
 
 class StaticFinding(BaseModel):
@@ -130,6 +137,14 @@ class ScanResponse(BaseModel):
     vulnerabilities: list[Vulnerability] = Field(default_factory=list)
     static_findings: list[StaticFinding] = Field(default_factory=list)
     risk_signals: RiskSignals
+
+    # 통합 시 추가 (팀 리뷰 대상): 외부 API 장애 등으로 일부 레이어가 실패했을 때
+    # 어떤 레이어가 빠진 채 판정됐는지 명시. 보안 도구가 조용히 "safe"를 주는 것보다
+    # "OSV 조회 실패한 상태의 판정"임을 CLI/대시보드가 표시하는 쪽이 안전함.
+    layer_errors: list[str] = Field(
+        default_factory=list,
+        description="실패한 탐지 레이어와 사유 (비어있으면 전 레이어 정상)",
+    )
 
 
 class ErrorResponse(BaseModel):

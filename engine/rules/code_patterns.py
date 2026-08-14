@@ -4,6 +4,31 @@ These overlap with Bandit by design — Bandit is the breadth net, this is the
 part we keep in-house so findings carry our own CWE tags and so the
 decode-into-``exec`` chain (which Bandit scores as two unrelated low-severity
 hits) is reported as the single high-severity signal it actually is.
+
+Severity model — why nothing here is HIGH
+-----------------------------------------
+Scanning the real ``requests`` sdist flagged three "high severity" calls and
+blocked the most-downloaded package on PyPI:
+
+    setup.py:57  os.system("python setup.py sdist bdist_wheel")
+    setup.py:58  os.system("twine upload dist/*")
+    setup.py:79  exec(f.read(), about)
+
+The first two sit behind ``if sys.argv[-1] == "publish"`` and never run during
+an install; the third is the near-universal idiom for reading ``__version__``.
+A scanner that blocks ``requests`` is not a scanner anyone will install.
+
+So a dangerous call on its own is *context*, not a verdict. HIGH is reserved
+for the signals that are specific to a supply-chain attack rather than merely
+present in Python code:
+
+    custom-pth                  code executing at every interpreter start
+    custom-install-hook         install/develop command hijacked
+    custom-obfuscated-payload   decoded bytes handed to an execution sink
+
+"Executing code you already have" is routine. "Executing code you just
+decoded" is malware — that distinction, not the presence of ``exec``, is what
+this layer is for.
 """
 
 from __future__ import annotations
@@ -18,13 +43,14 @@ from engine.rules.base import FileContext, make_finding
 RULE_DANGEROUS_CALL = "custom-dangerous-call"
 RULE_OBFUSCATED = "custom-obfuscated-payload"
 
-# call name -> (cwe, severity, human explanation)
+# call name -> (cwe, severity, human explanation). See the severity note above:
+# these are MEDIUM by design -- reported as context, never blocking on their own.
 _DANGEROUS_CALLS: dict[str, tuple[str, Severity, str]] = {
-    "eval": ("CWE-95", Severity.HIGH, "eval() executes attacker-controlled expressions"),
-    "exec": ("CWE-95", Severity.HIGH, "exec() executes arbitrary code at runtime"),
-    "os.system": ("CWE-78", Severity.HIGH, "os.system() runs a shell command"),
-    "os.popen": ("CWE-78", Severity.HIGH, "os.popen() runs a shell command"),
-    "os.execv": ("CWE-78", Severity.HIGH, "os.execv() replaces the process image"),
+    "eval": ("CWE-95", Severity.MEDIUM, "eval() executes an expression built at runtime"),
+    "exec": ("CWE-95", Severity.MEDIUM, "exec() executes code built at runtime"),
+    "os.system": ("CWE-78", Severity.MEDIUM, "os.system() runs a shell command"),
+    "os.popen": ("CWE-78", Severity.MEDIUM, "os.popen() runs a shell command"),
+    "os.execv": ("CWE-78", Severity.MEDIUM, "os.execv() replaces the process image"),
     "pickle.loads": ("CWE-502", Severity.MEDIUM, "pickle.loads() deserialises untrusted data"),
     "pickle.load": ("CWE-502", Severity.MEDIUM, "pickle.load() deserialises untrusted data"),
     "marshal.loads": ("CWE-502", Severity.MEDIUM, "marshal.loads() deserialises untrusted data"),
@@ -113,7 +139,7 @@ def dangerous_calls(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFindin
             yield make_finding(
                 rule=RULE_DANGEROUS_CALL,
                 cwe="CWE-78",
-                severity=Severity.HIGH,
+                severity=Severity.MEDIUM,
                 ctx=ctx,
                 line=node.lineno,
                 detail=f"{name}(..., shell=True) passes the command through a shell",

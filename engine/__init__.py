@@ -3,15 +3,16 @@
 Public entry points, both returning the shared contract types from
 ``api.schemas`` so the API router can drop them in place of its mocks:
 
-    cve_matcher.match_package(req)   -> list[Vulnerability]
-    static_analyzer.analyze_path(p)  -> list[StaticFinding]
+    cve_matcher.match_package(req)      -> list[Vulnerability]
+    static_analyzer.analyze_package(req) -> list[StaticFinding]   (fetches)
+    static_analyzer.analyze_path(path)   -> list[StaticFinding]   (offline)
 
-The router wiring is intentionally not done yet: ``api/routers/scan.py`` is
-also being modified by the scoring branch, so both layers get wired in one
-pass once that lands.
+Both are wired into ``api/routers/scan.py``. Pass the router's
+``common.pypi.PackageContext`` so PyPI is hit once per scan rather than once
+per layer.
 """
 
 from engine.cve_matcher import CveLookupError, match_package
-from engine.static_analyzer import analyze_path
+from engine.static_analyzer import analyze_package, analyze_path
 
-__all__ = ["CveLookupError", "analyze_path", "match_package"]
+__all__ = ["CveLookupError", "analyze_package", "analyze_path", "match_package"]

@@ -26,9 +26,9 @@
 | `rules/__init__.py` | 룰 레지스트리 (활성 룰 목록) |
 | `verdict.py` | 커스텀 룰 CWE 카탈로그 |
 
-**설계 원칙:** 네트워크 I/O는 `cve_matcher.query_osv` 한 곳에만 있습니다.
-파싱·판정 로직은 전부 순수 함수라 네트워크 없이 단위 테스트가 됩니다
-(실제로 28개 테스트 중 27개가 오프라인).
+**설계 원칙:** 네트워크 I/O는 `cve_matcher.query_osv`와 공용 `common.pypi` 두 곳에만
+있습니다. 파싱·룰·판정 로직은 전부 순수 함수라 네트워크 없이 단위 테스트가 됩니다
+(전체 83개 중 82개가 오프라인).
 
 모든 결과는 `api/schemas.py`의 `Vulnerability` / `StaticFinding`을 **그대로** 반환합니다.
 엔진 전용 중간 타입을 두지 않아서 API가 변환할 게 없습니다.
@@ -98,8 +98,17 @@ API는 이걸 받아 **502**로 내보내면 됩니다 (README의 에러 스키�
 ### 진입점
 
 ```python
-analyze_path(root)   # 압축 해제된 패키지 트리 → StaticFinding[] (심각도 높은 순)
+analyze_package(req, ctx=ctx)   # PyPI에서 받아 압축 해제 후 분석 (라우터가 쓰는 것)
+analyze_path(root)              # 이미 풀린 트리 → StaticFinding[] (심각도 높은 순)
 ```
+
+`ctx`는 `common.pypi.PackageContext`입니다. 라우터가 만들어 ②③에 같이 넘기므로
+**요청당 PyPI 조회 1회 · 아카이브 다운로드 1회**입니다. 안 넘기면 자체 컨텍스트를
+만들어 쓰고 끝나면 정리합니다.
+
+다운로드·압축해제는 `common/pypi.py`에 있습니다 (스코어링 파트와 공용).
+아카이브가 적대적이라는 전제로 zip-slip·압축폭탄·크기 초과를 전부 막습니다 —
+**악성 패키지를 분석하는 도구가 악성 패키지에 당하면 안 되니까요.**
 
 - `.py .pth .toml .cfg .txt .sh .bat .ps1`만 읽습니다 (나머지는 바이너리·노이즈)
 - 2MB 초과 파일, `__pycache__` / `.git` / `node_modules` 등은 스킵
@@ -124,12 +133,47 @@ AstRule  = (ctx, tree) -> findings   # 파싱 성공한 Python 모듈만
 
 | 룰 ID | 탐지 대상 | CWE | 심각도 |
 |---|---|---|:---:|
-| `custom-pth` | `.pth` 파일의 인터프리터 시작 시 자동 실행 | CWE-94 | high |
-| `custom-install-hook` | `setup(cmdclass={...})` 설치 명령 오버라이드 | CWE-94 | medium |
-| `custom-dangerous-call` | `eval`/`exec`/`os.system`/`shell=True` | CWE-78/95 | high |
-| `custom-dangerous-call` | `pickle.loads`/`marshal.loads` | CWE-502 | medium |
-| `custom-obfuscated-payload` | 디코딩 결과 → 실행 싱크 | CWE-506 | high |
+| `custom-pth` | `.pth` 파일의 인터프리터 시작 시 자동 실행 | CWE-94 | **high** |
+| `custom-install-hook` | `cmdclass`로 `install`/`develop` 가로채기 | CWE-94 | **high** |
+| `custom-install-hook` | `cmdclass`로 `sdist`/`bdist_wheel` 등 빌드 명령 | CWE-94 | medium |
+| `custom-obfuscated-payload` | 디코딩 결과 → 실행 싱크 | CWE-506 | **high** |
 | `custom-obfuscated-payload` | 200자 이상 인코딩 블롭 리터럴 | CWE-506 | medium |
+| `custom-dangerous-call` | `eval`/`exec` | CWE-95 | medium |
+| `custom-dangerous-call` | `os.system`/`os.popen`/`shell=True` | CWE-78 | medium |
+| `custom-dangerous-call` | `pickle.loads`/`marshal.loads` | CWE-502 | medium |
+
+### 심각도 모델 — 왜 `custom-dangerous-call`은 high가 아닌가
+
+처음엔 `eval`/`exec`/`os.system`을 전부 high로 잡았습니다. 그리고 **실제
+`requests` sdist를 스캔했더니 `block`이 나왔습니다.** PyPI 다운로드 1위 패키지가요.
+
+```
+setup.py:57  os.system("python setup.py sdist bdist_wheel")
+setup.py:58  os.system("twine upload dist/*")
+setup.py:79  exec(f.read(), about)
+```
+
+앞의 두 개는 `if sys.argv[-1] == "publish":` 가드 안이라 **설치할 때 실행되지
+않습니다** (관리자가 배포할 때만). 세 번째는 `__version__.py`를 읽는, 거의 모든
+패키지가 쓰는 관용구입니다.
+
+`requests`를 차단하는 스캐너는 아무도 안 씁니다. 그래서 기준을 바꿨습니다:
+
+> **위험 함수 호출은 그 자체로 판정 근거가 아니라 `정황`입니다.
+> high는 "Python 코드에 흔히 있는 것"이 아니라 "공급망 공격에 특유한 것"에만 씁니다.**
+
+high로 남긴 셋은 전부 이 프로젝트의 차별점과 정확히 겹칩니다 — `.pth` 자동실행,
+`install`/`develop` 명령 탈취, 디코딩→실행 체인.
+
+**"이미 가진 코드를 실행하는 것"은 일상이고, "방금 디코딩한 것을 실행하는 것"은
+malware입니다.** `exec`의 존재 여부가 아니라 이 구분이 이 레이어의 목적입니다.
+
+`custom-install-hook`도 같은 논리로 나눴습니다. `install`/`develop` 오버라이드는
+**설치하는 사람의 컴퓨터**에서 돌지만, `sdist`/`bdist_wheel`은 배포자 쪽에서만
+돌기 때문에 medium입니다.
+
+> 회귀 테스트: `test_real_world_setup_py_does_not_produce_high_findings`가
+> 위 `requests` 패턴을 그대로 재현해 high가 안 나오는지 검사합니다.
 
 ### `custom-pth` 가 이 프로젝트의 핵심 차별점
 
@@ -196,6 +240,12 @@ uv run pytest
 uv run pytest -m live
 
 uv run ruff check .
+
+# API (레이어 3개 전부 실동작)
+uv run uvicorn api.main:app --reload
+
+# 네트워크 없이 데모해야 할 때 (발표장 회선 사고 대비)
+SU_OFFLINE_DEMO=1 uv run uvicorn api.main:app
 ```
 
 직접 돌려보기:
@@ -217,15 +267,13 @@ analyze_path("samples")
 
 **아직 안 된 것**
 
-- **`analyze_package()` 미구현** — PyPI에서 sdist/wheel을 받아 압축 해제하는 단계가 없습니다.
-  `analyze_path()`(핵심 로직)는 완성됐고, 다운로드만 붙이면 됩니다.
-  주의: 아카이브 엔트리에 `..`나 절대경로가 들어올 수 있어 **zip-slip 방어**가 필요합니다.
-  (악성 패키지를 다루는 도구가 악성 패키지에 당하면 안 됨)
 - **Bandit 미연동** — 의존성은 등록했습니다. `bandit.core.manager.BanditManager`로
   같은 트리를 라이브러리 호출하면 되고, B코드 CWE 매핑은 위 경계상 API 파트 몫입니다.
-- **API 라우터 미배선** — `api/routers/scan.py`의 `_mock_cve_layer`/`_mock_static_layer`가
-  아직 mock입니다. 같은 파일을 `feat/scoring-rule-based`(승준)가 수정 중이라
-  **머지 충돌을 피하려고 일부러 미뤘습니다.** 그 브랜치 머지 후 ①③ 한 번에 배선합니다.
+- **결과 노이즈** — `requests` 하나를 스캔하면 medium 9건이 나옵니다. 차단은 안 되지만
+  리포트가 장황합니다. 같은 룰이 같은 파일에서 반복 탐지되는 것을 묶거나,
+  테스트 디렉토리 findings의 우선순위를 낮추는 정리가 필요합니다.
+  (테스트 디렉토리를 아예 스캔 제외하는 건 **일부러 안 했습니다** — 공격자가 숨길
+  사각지대를 만드는 셈이라, 노이즈를 감수하는 쪽을 택했습니다)
 
 **정확도 한계**
 

@@ -16,6 +16,11 @@ dist/
 .pytest_cache/
 .ruff_cache/
 
+# 스캔 결과 DB (런타임 산출물 — 각자 로컬에서 생성됨. WAL 사이드카 포함)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
 # 도구 설정
 .claude/
 

@@ -26,6 +26,7 @@ the validation samples, not learned:
 from __future__ import annotations
 
 from api.schemas import RiskSignals, ScanRequest
+from common.pypi import PackageContext
 from scoring import features
 from scoring.collector import PackageMetadata, collect
 
@@ -121,13 +122,27 @@ def compute_score(signals: RiskSignals) -> tuple[int, list[str]]:
     return score, reasons
 
 
-async def score_package(req: ScanRequest) -> tuple[RiskSignals, int]:
+async def score_package(
+    req: ScanRequest,
+    *,
+    ctx: PackageContext | None = None,
+) -> tuple[RiskSignals, int]:
     """Score a package end to end. Drop-in replacement for ``_mock_risk_layer``.
+
+    Pass the router's ``ctx`` so PyPI is queried once per scan and the result is
+    shared with the engine's static analysis.
 
     Returns ``(RiskSignals, risk_score)`` exactly like the API expects, so the
     router only needs to ``await`` this in place of the mock.
+
+    Note: ``compute_score`` also produces per-signal reason sentences, and they
+    are dropped here because the agreed contract has nowhere to put them. That
+    is a real loss -- "name resembles a popular package (similarity 0.82, +25)"
+    is far better demo material than the generic sentence the router
+    synthesises -- and widening the contract is a team decision, not one to
+    make here.
     """
-    meta = await collect(req.name, req.version)
+    meta = await collect(req.name, req.version, ctx=ctx)
     signals = build_signals(req.name, meta)
     score, _reasons = compute_score(signals)
     return signals, score

@@ -12,12 +12,17 @@
 (`custom-install-hook` 규칙은 파일명이 정확히 `setup.py`일 때만 동작 —
 파일명을 느슨하게 매칭하면 규칙 자체가 약해지므로 샘플 쪽을 실제 구조에 맞췄습니다).
 
-| 샘플 | 흉내내는 공격 | 탐지되어야 할 규칙 |
-|---|---|---|
-| `sample1_install_hook/setup.py` | 설치 시점 셸 명령 실행 | `custom-dangerous-call` (CWE-78) · `custom-install-hook` (CWE-94) |
-| `sample2_obfuscated/loader.py` | base64 인코딩 페이로드 → `exec` | `custom-obfuscated-payload` (CWE-506) · `custom-dangerous-call` (CWE-95) |
-| `sample3_pth_autoexec/install.pth` | `.pth` 인터프리터 시작 시 자동 실행 | `custom-pth` (CWE-94) |
-| `sample4_pickle/cache.py` | 신뢰할 수 없는 데이터 역직렬화 | `custom-dangerous-call` (CWE-502) |
+| 샘플 | 흉내내는 공격 | 탐지되어야 할 규칙 | 차단? |
+|---|---|---|:---:|
+| `sample1_install_hook/setup.py` | 설치 시점 셸 명령 실행 | `custom-install-hook` (CWE-94, high) · `custom-dangerous-call` (CWE-78, medium) | ✅ |
+| `sample2_obfuscated/loader.py` | base64 페이로드 → `exec` | `custom-obfuscated-payload` (CWE-506, high) | ✅ |
+| `sample3_pth_autoexec/install.pth` | `.pth` 시작 시 자동 실행 | `custom-pth` (CWE-94, high) | ✅ |
+| `sample4_pickle/cache.py` | 신뢰할 수 없는 데이터 역직렬화 | `custom-dangerous-call` (CWE-502, medium) | ❌ |
+
+`sample4`만 차단되지 않는 게 **의도**입니다. `pickle.loads()`는 정상 코드에도
+흔해서 그 자체로는 악의의 증거가 아닙니다. high는 공급망 공격에 특유한 신호
+(`.pth`·install 훅·디코딩→실행)에만 씁니다 — 자세한 근거는 `engine/README.md`의
+"심각도 모델" 참고.
 
 `sample3_install.pth`가 핵심 차별점입니다 — `pip-audit`·`safety`는 물론 Bandit도
 `.pth` 파일은 보지 않습니다. (Python 소스가 아니라서 파서 대상 자체가 아님)
