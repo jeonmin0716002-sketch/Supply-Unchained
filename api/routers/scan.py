@@ -2,9 +2,16 @@
 
 세 레이어가 전부 실제 모듈로 연결되어 있습니다:
 
-    ① CVE/OSV  -> engine.cve_matcher.match_package        (민규)
-    ② 정적분석  -> engine.static_analyzer.analyze_package   (민규)
-    ③ 스코어링  -> scoring.scorer.score_package            (승준)
+    ① CVE/OSV     -> engine.cve_matcher.match_package        (민규)
+    ② 정적분석     -> engine.static_analyzer.analyze_package   (민규)
+    ②' Bandit    -> _run_bandit (아래, 이 파일)                (재웅)
+    ③ 스코어링     -> scoring.scorer.score_package            (승준)
+
+②' 은 CWE 소유권 분리(engine/verdict.py 참고: "CWE for OSV/CVE 및 Bandit B-codes ->
+API part")에 따라 engine/ 이 아니라 여기서 돈다 — engine.static_analyzer.analyze_path
+와 그 RULE_CATALOG/KNOWN_CWES 를 건드리지 않기 위해서다 (Bandit 의 B-코드는 커스텀
+룰 카탈로그에 등록된 적이 없어 거기 섞이면 tests/test_engine.py::
+test_every_emitted_cwe_is_declared 가 즉시 깨진다).
 
 PyPI 조회·아카이브 다운로드는 요청당 한 번만 일어납니다. ``common.pypi.PackageContext``
 를 여기서 만들어 ②③에 넘기기 때문입니다 (레이어마다 따로 받으면 같은 sdist를 두 번
@@ -26,11 +33,14 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
+from bandit.core import config as bandit_config
+from bandit.core import manager as bandit_manager
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from api.cwe import tag_vulnerabilities
+from api.cwe import finding_from_bandit_issue, tag_vulnerabilities
 from api.schemas import (
     ErrorResponse,
     RiskSignals,
@@ -96,6 +106,58 @@ async def _layer_static(
         # 패키지가 없거나 아카이브를 못 읽은 경우. "검사하지 못했다"는 사실이
         # "검사했고 깨끗했다"로 보이면 안 되므로 layer_errors 로 남긴다.
         errors.append(f"static: {exc}")
+        return []
+
+
+#: Bandit 자체 severity 를 그대로 통과시키면 안 되는 이유: B602(subprocess shell=True)
+#: 처럼 손으로 짠 애플리케이션 코드 기준으로 튜닝된 규칙이 기본 HIGH 를 매기는데,
+#: _decide() 는 HIGH finding 하나만으로 risk_score 와 무관하게 무조건 block 한다.
+#: 커스텀 룰이 requests 의 os.system() 을 일부러 MEDIUM 으로 낮춘 것과 같은 이유
+#: (engine/rules/code_patterns.py 상단 주석 참고) — 실제 유명 패키지 대상 오탐률을
+#: 재보기 전까지는 여기서 상한을 걸어둔다.
+_BANDIT_SEVERITY_CAP = Severity.MEDIUM
+
+#: sdist 에는 tests/examples/docs 가 그대로 들어있는 경우가 흔한데, 그 코드는
+#: `pip install` 이나 `import` 시점에 실행되지 않는다 — 여기 있는 assert/hardcoded
+#: password 는 "이 패키지가 우리 프로세스에서 실행할 코드"가 아니라 노이즈다.
+#: flask==3.0.0 실측: 제외 전 1006 findings, 대부분 examples/tests 내부 B101.
+#: 경계 문자를 넣어 "latest" 같은 부분 문자열 오매칭을 막는다 (os.sep 로 감쌈).
+_BANDIT_EXCLUDE_DIRS = ",".join(
+    f"{os.sep}{name}{os.sep}"
+    for name in ("tests", "test", "examples", "docs", "doc")
+)
+
+
+def _run_bandit(root: Path) -> list[StaticFinding]:
+    """Bandit 브레드스넷 — 추출된 패키지 트리에서 실제 배포되는 코드만 라이브러리로 돈다."""
+    b_conf = bandit_config.BanditConfig()
+    mgr = bandit_manager.BanditManager(b_conf, "file", quiet=True)
+    mgr.discover_files([str(root)], recursive=True, excluded_paths=_BANDIT_EXCLUDE_DIRS)
+    mgr.run_tests()
+
+    findings: list[StaticFinding] = []
+    for issue in mgr.get_issue_list():
+        try:
+            relpath = Path(issue.fname).resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            relpath = issue.fname
+        finding = finding_from_bandit_issue(issue, root_relpath=relpath)
+        if _SEVERITY_ORDER[finding.severity] > _SEVERITY_ORDER[_BANDIT_SEVERITY_CAP]:
+            finding = finding.model_copy(update={"severity": _BANDIT_SEVERITY_CAP})
+        findings.append(finding)
+    return findings
+
+
+async def _layer_bandit(
+    req: ScanRequest, ctx: PackageContext, errors: list[str]
+) -> list[StaticFinding]:
+    try:
+        root = await ctx.extracted_path()
+        if not root:
+            return []
+        return _run_bandit(root)
+    except Exception as exc:  # bandit 내부 예외 계층이 알려져 있지 않아 광범위 캐치
+        errors.append(f"bandit: {exc}")
         return []
 
 
@@ -231,12 +293,14 @@ async def run_scan(
         # 앱의 공유 커넥션 풀을 넘기므로 ctx 는 클라이언트를 닫지 않고 임시 디렉터리만
         # 정리합니다. PackageContext 는 내부에 락이 있어 병렬 접근에 안전합니다.
         async with PackageContext(req.name, req.version, client=http) as ctx:
-            # 세 레이어는 서로 독립 — 병렬 실행 (①은 OSV, ②③은 공유 ctx)
-            vulns, findings, (signals, risk_score) = await asyncio.gather(
+            # 네 레이어는 서로 독립 — 병렬 실행 (①은 OSV, ②②'③은 공유 ctx)
+            vulns, findings, bandit_findings, (signals, risk_score) = await asyncio.gather(
                 _layer_cve(req, http, layer_errors),
                 _layer_static(req, ctx, layer_errors),
+                _layer_bandit(req, ctx, layer_errors),
                 _layer_scoring(req, ctx, layer_errors),
             )
+            findings = findings + bandit_findings
 
         # CWE 태깅 (담당: API 파트) — 취약점별 OSV 재조회로 cwe_ids 를 채운다.
         # 부가 정보라 실패는 조용히 빈 리스트로 남고 판정에는 영향 없음.
