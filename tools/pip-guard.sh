@@ -25,7 +25,9 @@ pip() {
   # 사용자가 지금 서 있는 환경에 들어가야 한다. 이걸 안 넘기면 스캐너의 venv 에 깔린다.
   local real_pip
   real_pip="$(command -v pip 2>/dev/null)"
-  ( cd "$SU_GUARD_HOME" && uv run python -m cli.su_scan guard --su-pip "$real_pip" -- "$@" )
+  # VIRTUAL_ENV 를 가리는 이유는 pip-guard.ps1 의 같은 자리 주석 참고 — 스캐너 환경과
+  # 설치 대상 환경이 다른 게 정상인데 uv 가 경고를 찍어 화면이 지저분해진다.
+  ( cd "$SU_GUARD_HOME" && env -u VIRTUAL_ENV uv run python -m cli.su_scan guard --su-pip "$real_pip" -- "$@" )
 }
 
 # pip3 도 같은 경로를 타게 한다

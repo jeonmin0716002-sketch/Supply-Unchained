@@ -29,11 +29,16 @@ function pip {
 
     $rest = @($args[1..($args.Count - 1)])
     Push-Location $env:SU_GUARD_HOME
+    # 스캐너는 저장소의 .venv 에서 돌아야 하고, 설치는 사용자가 서 있는 환경으로 가야 한다.
+    # 그 둘이 다른 게 정상인데, VIRTUAL_ENV 가 켜져 있으면 uv 가 "프로젝트 환경과 다르다"고
+    # 경고를 찍는다 — 동작에는 영향이 없고 화면만 지저분해지므로 이 호출 동안만 가린다.
+    # 설치 대상은 아래 --su-pip 로 명시해 넘기므로 이걸 가려도 엉뚱한 곳에 깔리지 않는다.
+    $savedVenv = $env:VIRTUAL_ENV
+    $env:VIRTUAL_ENV = $null
     try {
-        # 설치는 사용자가 지금 서 있는 환경에 들어가야 하므로 진짜 pip 경로를 넘긴다.
-        # 안 넘기면 스캐너가 도는 저장소 .venv 에 깔린다.
         uv run python -m cli.su_scan guard --su-pip $realPip -- @rest
     } finally {
+        $env:VIRTUAL_ENV = $savedVenv
         Pop-Location
     }
 }
