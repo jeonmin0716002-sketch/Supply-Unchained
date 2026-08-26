@@ -390,6 +390,7 @@ OSV·PyPI 모두 인증이 필요 없어 `.env` 설정 없이 동작합니다.
 | README·발표자료 | 한글 (수상 시 영문화) |
 | 브랜치 | 기능 단위는 `feat/<파트>-<기능>` → PR. 문서·소규모 수정은 `main` 직접 푸시 (`main` 보호 미설정) |
 | 커밋 prefix | `feat:` `fix:` `docs:` `refactor:` `test:` |
+| 커밋 트레일러 | AI co-author 표기(`Co-Authored-By: Claude ...`) 금지 — 기여자는 팀원만 |
 | 스키마 변경 | `api/schemas.py` 는 팀 합의 후 |
 
 ---
