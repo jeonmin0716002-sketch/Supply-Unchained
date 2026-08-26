@@ -1,6 +1,6 @@
 """CWE parsing for OSV/CVE and Bandit results — API-part responsibility.
 
-Week-0 split of CWE work (see week0-meeting.md and engine/verdict.py):
+Week-0 split of CWE work (see engine/verdict.py for the other half):
   * custom rules (.pth / install-hook ...)  -> engine tags them at detection time
   * OSV/CVE advisories and Bandit B-codes   -> parsed HERE, in the API layer
 
