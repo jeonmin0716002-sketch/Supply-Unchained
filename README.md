@@ -34,6 +34,9 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 임계값·규칙셋은 검증 샘플로 계속 튜닝 중입니다. 남은 작업은 대시보드 완성,
 실배포(TestPyPI/Docker Hub), 발표 준비입니다.
 
+통합 리뷰와 중간점검 결정 사항은 [`docs/week1-review.md`](docs/week1-review.md),
+[`docs/week2-integration.md`](docs/week2-integration.md) 참고.
+
 ---
 
 ## 배경
@@ -293,35 +296,6 @@ SU_OFFLINE_DEMO=1 uv run uvicorn api.main:app
 
 ---
 
-## 개발 로드맵
-
-### Phase 0 — 기획 & 초기 세팅 (완료)
-- [x] 프로젝트 방향·스코프 확정, 레포 생성
-- [x] 개발환경 통일 (Python 3.12 · uv · Docker slim)
-- [x] API 스키마 확정 + uv 프로젝트 초기화 (`pyproject.toml` · `uv.lock`)
-
-### Phase 1 — 코어 기능 (완료)
-- [x] 탐지 엔진 ①: OSV.dev 연동
-- [x] 탐지 엔진 ②: 커스텀 규칙 4종 (`.pth` · install hook · 위험 호출 · 난독화) + Bandit 연동
-- [x] 데이터·스코어링: PyPI 메타데이터 수집 + 규칙 기반 스코어러
-- [x] 공용 PyPI fetcher (`common/`) — 다운로드·안전 추출
-
-### Phase 2 — 통합 (진행 중)
-- [x] 세 모듈을 `/scan` 응답 하나로 통합
-- [x] 악성 패턴 샘플 4종 + 실제 PyPI 패키지(`requests` · `flask`) 오탐 검증
-- [x] CLI · pip 프록시 · 스캔 이력 저장
-- [ ] SBOM 대시보드 완성
-
-### Phase 3 — 다듬기 & 발표
-- [ ] 실배포 (TestPyPI/PyPI 또는 Docker Hub)
-- [ ] 실제 PyPI 패키지 대상 스캔 데모 · 발표자료
-- [ ] 문서·라이선스 정리
-
-통합 리뷰와 중간점검 결정 사항은 [`docs/week1-review.md`](docs/week1-review.md),
-[`docs/week2-integration.md`](docs/week2-integration.md) 참고.
-
----
-
 ## 초기 세팅 가이드
 
 ### 레포 구조
@@ -414,7 +388,7 @@ OSV·PyPI 모두 인증이 필요 없어 `.env` 설정 없이 동작합니다.
 | Docker | `python:3.12-slim` (alpine 금지) |
 | 코드·주석·커밋 메시지 | 영어 (public 전환 대비) |
 | README·발표자료 | 한글 (수상 시 영문화) |
-| 브랜치 | `main`(보호) ← `feat/<파트>-<기능>` PR |
+| 브랜치 | 기능 단위는 `feat/<파트>-<기능>` → PR. 문서·소규모 수정은 `main` 직접 푸시 (`main` 보호 미설정) |
 | 커밋 prefix | `feat:` `fix:` `docs:` `refactor:` `test:` |
 | 스키마 변경 | `api/schemas.py` 는 팀 합의 후 |
 
@@ -426,7 +400,6 @@ OSV·PyPI 모두 인증이 필요 없어 `.env` 설정 없이 동작합니다.
   실행 → 네트워크·파일시스템 행위 관찰
 - **멀티 에코시스템**: `ecosystem` 파라미터 기반으로 npm · cargo 등 지원
 - **머신러닝 스코어링**: 라벨 데이터 확보 시 규칙 기반 → 분류 모델 고도화
-- **CI/CD 통합**: GitHub Actions 등에서 PR마다 자동 스캔
 - **IDE 플러그인**: 설치 전 에디터 단에서 경고
 
 ---
