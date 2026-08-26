@@ -15,6 +15,8 @@
     3. verdict 가 block 이면 403 + 판정 근거 반환 → pip 설치 실패로 이어짐.
        safe/warn 이면 원본 바이트를 그대로 스트리밍. (warn 을 어디까지 허용할지는
        팀 리뷰 대상 — 기본값은 "차단은 block 만, warn 은 통과+로그".)
+    4. 파일명에서 name==version 을 못 읽으면 스캔 자체가 불가능하므로 403 (fail-closed).
+       통과시키면 파싱 안 되는 이름 하나로 게이트를 우회할 수 있다.
 
 의도적으로 안 하는 것:
     * 인덱스 페이지 단계(1)에서는 차단하지 않는다 — 그 시점엔 pip 이 어떤 버전을
@@ -162,29 +164,42 @@ async def gated_file(
 
     parsed_name = parse_archive_filename(filename)
 
-    if parsed_name is not None:
-        name, version = parsed_name
-        result = await run_scan(
-            ScanRequest(name=name, version=version),
-            http=request.app.state.http,
-            store=request.app.state.store,
+    if parsed_name is None:
+        # fail-closed. 예전엔 여기서 스캔 없이 통과시켰는데, 그건 게이트를 무력화하는
+        # 우회로였다 — 인덱스 페이지를 통제하는 쪽(정확히 이 프로젝트의 위협 모델이다)이
+        # 파싱 안 되는 파일명을 하나 내밀면 스캔을 통째로 건너뛰고 내려받을 수 있다.
+        # "설치되기 전에 끊어낸다"는 이 프로젝트의 전제와 정면으로 어긋난다.
+        #
+        # 되돌리려면 이 블록을 지우면 통과 정책으로 돌아간다. 다만 되돌리기 전에,
+        # 파싱 실패의 원인이 정상 패키지라면 그건 parse_archive_filename 의 버그이지
+        # 게이트를 열어둘 이유가 아니다 — 정규식을 고치는 쪽이 맞다.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"파일명에서 name==version 을 읽지 못해 스캔할 수 없습니다: {filename!r}. "
+                "미검증 아카이브는 통과시키지 않습니다."
+            ),
         )
-        if result.verdict is Verdict.BLOCK:
-            # pip 에게는 다운로드 실패로 보이고, 사유는 본문에 남는다.
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "error": "blocked_by_supply_unchained",
-                    "package": f"{name}=={version}",
-                    "risk_score": result.risk_score,
-                    "reasons": result.verdict_reasons,
-                    "scan_id": result.scan_id,
-                },
-            )
-        # safe/warn → 통과. warn 은 스캔 이력(대시보드)에서 확인 가능.
 
-    # 파일명 파싱 실패 시 정책 (팀 리뷰 대상): 현재는 스캔 없이 통과 + 주의.
-    # fail-closed 로 바꾸려면 여기서 403 을 반환하면 된다.
+    name, version = parsed_name
+    result = await run_scan(
+        ScanRequest(name=name, version=version),
+        http=request.app.state.http,
+        store=request.app.state.store,
+    )
+    if result.verdict is Verdict.BLOCK:
+        # pip 에게는 다운로드 실패로 보이고, 사유는 본문에 남는다.
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "blocked_by_supply_unchained",
+                "package": f"{name}=={version}",
+                "risk_score": result.risk_score,
+                "reasons": result.verdict_reasons,
+                "scan_id": result.scan_id,
+            },
+        )
+    # safe/warn → 통과. warn 은 스캔 이력(대시보드)에서 확인 가능.
 
     http = request.app.state.http
     upstream = await http.send(

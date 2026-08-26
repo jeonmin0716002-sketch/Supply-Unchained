@@ -290,8 +290,9 @@ wheel의 `.pth` 자동실행은 엔진이 이미 탐지하는 규칙인데 정�
 | CWE 태깅 N+1 (스캔당 OSV 재조회 6회) | 민규 | `engine/cve_matcher.parse_osv_response`가 raw payload를 이미 들고 있어 `cwes_from_osv()` 호출 한 줄이면 네트워크 0회 추가. `api/cwe.tag_vulnerabilities`는 그때 은퇴 |
 | `README.md` 갱신 | 재웅 | 프록시·대시보드·CLI·Docker가 아직 문서에 없음 |
 | CLI `install`이 전이 의존성 미검사 | 재웅 | 프록시 경로는 모든 파일이 게이트를 지나지만 CLI는 named 패키지만 스캔 |
-| 게이트 fail-open 2곳 | 재웅 | 파일명 파싱 실패 시 통과(`.egg`/`.tar.xz` 미포함), `files.pythonhosted.org` 외 호스트 링크는 재작성 안 됨 |
-| Docker root 실행 | 민규 | 적대적 아카이브를 풀어내는 프로세스라 `USER` 추가 권장 |
+| ~~게이트 fail-open (파일명 파싱 실패 시 통과)~~ | 재웅 | **해결** — fail-closed 로 전환(403). `.egg`/`.tar.xz` 등 파싱 안 되는 이름 하나로 게이트를 통째로 우회할 수 있었음 |
+| 게이트 fail-open (호스트 재작성) | 재웅 | 남음 — `files.pythonhosted.org` 외 호스트 링크는 재작성되지 않아 게이트를 지나지 않음 |
+| ~~Docker root 실행~~ | 민규 | **해결** — `USER app`(uid 10001) 추가, 베이스 이미지 다이제스트 고정 |
 | `storage.py` 죽은 인덱스 | 재웅 | `idx_scans_time`은 `scanned_at DESC`인데 `_recent`는 `id DESC` 정렬 |
 
 ---

@@ -10,6 +10,10 @@
 #
 # 실서비스에서 진짜 스캔으로 게이트를 걸려면 SU_OFFLINE_DEMO 를 빼고
 # check-file 스텝을 그대로 쓰면 된다 (아래 '실사용 예시' 주석 참고).
+# 액션은 커밋 SHA 로 고정한다 — 태그(@v4)는 언제든 다른 커밋을 가리키게 바뀔 수 있고,
+# 그 순간 우리 CI 러너 안에서 남의 코드가 조용히 갈린다. 이 프로젝트가 막겠다는 공격이
+# 정확히 그 모양이라 자기 파이프라인부터 지킨다. 옆의 주석이 사람이 읽는 버전 표시다.
+# 갱신: gh api repos/<owner>/<repo>/git/ref/tags/<tag> 로 SHA 를 다시 뽑아 바꾼다.
 name: Supply-Chain Scan
 
 on:
@@ -21,10 +25,10 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
         with:
           python-version: "3.12"
 

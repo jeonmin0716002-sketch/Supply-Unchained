@@ -15,6 +15,7 @@ Still to come (tracked, not silently missing):
 from __future__ import annotations
 
 import ast
+import asyncio
 from pathlib import Path
 
 from api.schemas import ScanRequest, Severity, StaticFinding
@@ -123,10 +124,13 @@ async def analyze_package(
     decides what to do, because "we could not look" must never be silently
     reported as "we looked and it was clean".
     """
+    # analyze_path() 는 트리 전체를 읽고 AST 를 파싱하는 동기 작업이다. 코루틴에서 그대로
+    # 부르면 라우터가 asyncio.gather 로 묶어둔 나머지 레이어가 그 시간만큼 통째로 멈추고,
+    # 서버의 다른 요청도 같이 멈춘다 (api/routers/scan.py 의 bandit 레이어와 같은 이유).
     if ctx is not None:
         root = await ctx.extracted_path()
-        return analyze_path(root) if root else []
+        return await asyncio.to_thread(analyze_path, root) if root else []
 
     async with PackageContext(req.name, req.version) as own_ctx:
         root = await own_ctx.extracted_path()
-        return analyze_path(root) if root else []
+        return await asyncio.to_thread(analyze_path, root) if root else []

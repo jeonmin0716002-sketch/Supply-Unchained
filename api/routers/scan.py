@@ -32,8 +32,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import httpx
 from bandit.core import config as bandit_config
@@ -121,31 +122,153 @@ _BANDIT_SEVERITY_CAP = Severity.MEDIUM
 #: `pip install` 이나 `import` 시점에 실행되지 않는다 — 여기 있는 assert/hardcoded
 #: password 는 "이 패키지가 우리 프로세스에서 실행할 코드"가 아니라 노이즈다.
 #: flask==3.0.0 실측: 제외 전 1006 findings, 대부분 examples/tests 내부 B101.
-#: 경계 문자를 넣어 "latest" 같은 부분 문자열 오매칭을 막는다 (os.sep 로 감쌈).
-_BANDIT_EXCLUDE_DIRS = ",".join(
-    f"{os.sep}{name}{os.sep}"
-    for name in ("tests", "test", "examples", "docs", "doc")
-)
+#:
+#: bandit 의 ``excluded_paths`` 를 쓰지 않고 직접 거르는 이유가 둘 있다.
+#:   1) bandit 은 제외 패턴을 **절대경로 부분문자열**로 비교한다(BanditManager 내부
+#:      구현 디테일). 추출 임시 디렉터리 경로에 우연히 "docs" 가 들어가면 패키지 전체가
+#:      조용히 스킵돼 "검사했고 깨끗했다"로 보인다.
+#:   2) 문서화된 계약이 아니라 bandit 업그레이드 한 번에 말없이 깨질 수 있다.
+#: 그래서 패키지 루트 기준 상대경로의 **디렉터리 이름 정확 일치**로 판정한다.
+_BANDIT_EXCLUDE_DIRS = frozenset({"tests", "test", "examples", "docs", "doc"})
+
+#: Bandit 은 순수 CPU 작업이라 코루틴 안에서 그냥 부르면 이벤트 루프가 그대로 멈춘다
+#: (site-packages/rich 실측: 100 파일에 15.6초 — 그동안 /health 도, 프록시의 아카이브
+#: 스트리밍도, 다른 스캔도 전부 정지한다). api/storage.py 가 동기 sqlite 를
+#: asyncio.to_thread 로 감싸는 것과 같은 이유로 스레드에 넘긴다.
+#:
+#: 다만 to_thread 로 넘긴 스레드는 취소할 수 없다 — asyncio.wait_for 로 감싸면 요청은
+#: 돌아오지만 스레드는 계속 CPU 를 먹는다. 그래서 시간 예산은 **스레드 안에서** 지킨다.
+BANDIT_BUDGET_SECONDS = float(os.environ.get("SU_BANDIT_BUDGET", "20"))
+
+#: 한 패키지에서 bandit 에 태울 파일 수 상한. 아카이브는 MAX_MEMBERS(=5000) 까지
+#: 통과할 수 있어서 상한이 없으면 조작된 sdist 하나로 스캐너를 몇 분씩 붙잡아둘 수 있다
+#: — 공급망 스캐너가 스캔 대상에게 DoS 당하는 모양새라 예산과 별도로 못을 박아둔다.
+MAX_BANDIT_FILES = 400
+
+#: 파일 **하나**의 크기 상한. 예산만으로 부족한 이유: bandit 은 run_tests() 안에서 파일
+#: 단위로만 끊을 수 있어서, 예산 초과분이 "가장 무거운 파일 하나"만큼은 반드시 생긴다.
+#: 그 파일이 얼마나 나쁠 수 있는지가 이 상한의 존재 이유다.
+#:
+#: 실측(파일 1개씩 bandit 단독 실행):
+#:     rich/_emoji_codes.py       137 KB   8.9초    <- 거대한 dict 리터럴
+#:     fastapi/routing.py         248 KB   0.6초
+#:     fastapi/applications.py    179 KB   0.2초
+#:     rich/console.py             99 KB   0.3초
+#: 비용은 크기에도 AST 노드 수에도 비례하지 않는다 — _emoji_codes.py 는 routing.py 보다
+#: 노드가 3분의 1인데 15배 느리다. 문자열 상수가 수천 개인 파일에서 특정 플러그인이
+#: 터지는 형태라, 미리 싸게 예측할 방법이 없다. 그래서 예측 대신 크기로 자른다.
+#:
+#: 64 KB 는 안전 쪽으로 기운 선택이고, 대가가 있다 — routing.py 처럼 **진짜 로직인 큰
+#: 파일도 같이 걷힌다**. 그 대가를 받아들이는 근거는 셋이다. (1) bandit 은 브레드스넷
+#: 보조 레이어고, 커스텀 룰(engine/static_analyzer)은 이 상한과 무관하게 전부 훑는다.
+#: (2) 건너뛴 파일은 응답의 layer_errors 에 파일명까지 남아 "검사했고 깨끗했다"로
+#: 둔갑하지 않는다. (3) 상한을 128 KB 로 풀면 조작된 파일 하나의 최악 비용이 2초대에서
+#: 9초대로 뛴다. 팀이 커버리지 쪽을 택하고 싶으면 SU_BANDIT_MAX_FILE_KB 로 올리면 된다.
+MAX_BANDIT_FILE_BYTES = int(os.environ.get("SU_BANDIT_MAX_FILE_KB", "64")) * 1024
+
+#: 예산을 확인하는 주기(파일 수). run_tests() 는 통짜 호출이라 중간에 끊을 수 없으므로
+#: files_list 를 이 크기로 잘라 넘기고 청크 사이에서 시계를 본다. 1 인 이유는 예산
+#: 초과분이 "청크 하나를 도는 시간"만큼 생기기 때문 — rich 로 재보니 8 로 묶으면 3초
+#: 예산이 9.6초까지 밀렸다(무거운 파일 하나가 청크에 섞이면 그렇게 된다). 1 로 낮추는
+#: 대가는 run_tests() 재호출 오버헤드 약 6% (rich 전체 12.9초 -> 13.8초)로, 예산을
+#: 3배 넘기는 것보다 싸다.
+_BANDIT_CHUNK = 1
 
 
-def _run_bandit(root: Path) -> list[StaticFinding]:
-    """Bandit 브레드스넷 — 추출된 패키지 트리에서 실제 배포되는 코드만 라이브러리로 돈다."""
+def _relative_to_root(path: str, root: Path) -> str:
+    """추출 루트 기준 상대경로. 루트 밖이면 원본을 그대로 돌려준다."""
+    try:
+        return Path(path).resolve().relative_to(root).as_posix()
+    except ValueError:
+        return path
+
+
+def _is_excluded(relpath: str) -> bool:
+    """상대경로의 디렉터리 이름 중 하나라도 제외 목록에 있으면 True.
+
+    파일명 자체는 보지 않는다 — ``docs.py`` 같은 모듈은 실제 배포 코드다.
+    """
+    return any(part in _BANDIT_EXCLUDE_DIRS for part in PurePosixPath(relpath).parts[:-1])
+
+
+def _too_big(path: str) -> bool:
+    """MAX_BANDIT_FILE_BYTES 초과 여부. stat 실패는 "못 읽는 파일"이라 건너뛴다."""
+    try:
+        return Path(path).stat().st_size > MAX_BANDIT_FILE_BYTES
+    except OSError:
+        return True
+
+
+def _run_bandit(
+    root: Path, budget: float | None = None
+) -> tuple[list[StaticFinding], str | None]:
+    """Bandit 브레드스넷 — 추출된 패키지 트리에서 실제 배포되는 코드만 라이브러리로 돈다.
+
+    반환값은 ``(findings, 미완료 사유)``. 예산이나 파일 수 상한에 걸려 일부만 본 경우
+    사유 문자열이 채워지며, 호출부가 그걸 layer_errors 로 남긴다 — "검사하지 못했다"가
+    "검사했고 깨끗했다"로 보이면 안 된다는 _layer_static 과 같은 정책이다.
+    """
+    root = root.resolve()
     b_conf = bandit_config.BanditConfig()
     mgr = bandit_manager.BanditManager(b_conf, "file", quiet=True)
-    mgr.discover_files([str(root)], recursive=True, excluded_paths=_BANDIT_EXCLUDE_DIRS)
-    mgr.run_tests()
+    mgr.discover_files([str(root)], recursive=True)
+
+    # 얕은 경로 우선 — 예산이 모자라 잘릴 때 무엇이 남는지를 결정한다. setup.py 나
+    # <pkg>/__init__.py 처럼 트리 위쪽에 있는 파일이 `pip install`·`import` 시점에
+    # 실제로 실행되는 코드라, 깊은 서브모듈보다 먼저 봐야 잘린 결과도 쓸모가 있다.
+    scoped = sorted(
+        (
+            (rel, fname)
+            for fname, rel in ((f, _relative_to_root(f, root)) for f in mgr.files_list)
+            if not _is_excluded(rel)
+        ),
+        key=lambda pair: (pair[0].count("/"), pair[0]),
+    )
+
+    # 미완료 사유는 누적한다 — 크기 상한과 예산에 동시에 걸릴 수 있고, 둘 중 하나만
+    # 보고하면 응답을 보는 사람이 사각의 크기를 잘못 짐작한다.
+    notes: list[str] = []
+
+    oversized = [rel for rel, f in scoped if _too_big(f)]
+    if oversized:
+        scoped = [pair for pair in scoped if pair[0] not in set(oversized)]
+        notes.append(
+            f"{MAX_BANDIT_FILE_BYTES // 1024} KB 초과 파일 {len(oversized)}개 건너뜀 "
+            f"({', '.join(sorted(oversized)[:3])}{' 외' if len(oversized) > 3 else ''})"
+        )
+
+    if len(scoped) > MAX_BANDIT_FILES:
+        notes.append(
+            f"파이썬 파일 {len(scoped)}개 중 얕은 경로 우선 {MAX_BANDIT_FILES}개만 검사함"
+        )
+        scoped = scoped[:MAX_BANDIT_FILES]
+
+    # 비교를 >= 로 두는 이유: Windows 의 time.monotonic() 해상도가 ~15ms 라 budget=0 에서
+    # now > now 가 False 로 떨어져 "예산이 0인데 파일 하나는 돈다"가 된다. 0 은 0이어야 한다.
+    deadline = None if budget is None else time.monotonic() + budget
+    scanned = 0
+    for start in range(0, len(scoped), _BANDIT_CHUNK):
+        if deadline is not None and time.monotonic() >= deadline:
+            notes.append(
+                f"{budget:g}초 예산 초과 — 파일 {len(scoped)}개 중 {scanned}개까지만 검사함"
+            )
+            break
+        chunk = [fname for _, fname in scoped[start : start + _BANDIT_CHUNK]]
+        # run_tests() 는 self.files_list 를 훑고 결과를 self.results 에 누적하므로,
+        # 목록을 갈아끼우며 여러 번 부르면 청크 단위 실행이 된다.
+        mgr.files_list = chunk
+        mgr.run_tests()
+        scanned += len(chunk)
 
     findings: list[StaticFinding] = []
     for issue in mgr.get_issue_list():
-        try:
-            relpath = Path(issue.fname).resolve().relative_to(root.resolve()).as_posix()
-        except ValueError:
-            relpath = issue.fname
-        finding = finding_from_bandit_issue(issue, root_relpath=relpath)
+        finding = finding_from_bandit_issue(
+            issue, root_relpath=_relative_to_root(issue.fname, root)
+        )
         if _SEVERITY_ORDER[finding.severity] > _SEVERITY_ORDER[_BANDIT_SEVERITY_CAP]:
             finding = finding.model_copy(update={"severity": _BANDIT_SEVERITY_CAP})
         findings.append(finding)
-    return findings
+    return findings, "; ".join(notes) or None
 
 
 async def _layer_bandit(
@@ -155,7 +278,14 @@ async def _layer_bandit(
         root = await ctx.extracted_path()
         if not root:
             return []
-        return _run_bandit(root)
+        # 스레드로 내보내야 나머지 세 레이어의 gather 병렬성이 살아있다 — 여기서 동기로
+        # 부르면 bandit 이 끝날 때까지 ①③은 시작조차 못 한다 (BANDIT_BUDGET_SECONDS 주석).
+        findings, truncated = await asyncio.to_thread(
+            _run_bandit, root, BANDIT_BUDGET_SECONDS
+        )
+        if truncated:
+            errors.append(f"bandit: {truncated}")
+        return findings
     except Exception as exc:  # bandit 내부 예외 계층이 알려져 있지 않아 광범위 캐치
         errors.append(f"bandit: {exc}")
         return []
