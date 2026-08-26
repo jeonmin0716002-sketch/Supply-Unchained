@@ -6,7 +6,10 @@ history endpoints, proxy link rewriting, and the download gate blocking flow.
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
+from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -348,6 +351,29 @@ def test_gate_rejects_filename_mismatch(client, monkeypatch):
     assert r.status_code == 400
 
 
+def test_gate_is_fail_closed_on_unparseable_filename(client, monkeypatch):
+    """파일명에서 name==version 을 못 읽으면 스캔이 불가능하므로 통과시키지 않는다.
+
+    통과시키면 인덱스 페이지를 통제하는 쪽 — 정확히 이 프로젝트의 위협 모델 — 이
+    파싱 안 되는 이름 하나로 게이트를 통째로 우회할 수 있다.
+    """
+    scanned: list[str] = []
+
+    async def spy_static(req, ctx, errors):
+        scanned.append(req.name)
+        return []
+
+    _patch_layers(monkeypatch)
+    monkeypatch.setattr(scan, "_layer_static", spy_static)
+
+    # .tar 는 _SDIST_RE 가 다루지 않는 확장자라 파싱에 실패한다.
+    url = "https%3A%2F%2Ffiles.pythonhosted.org%2Fpackages%2Fx%2Fmystery.tar"
+    r = client.get(f"/files/mystery.tar?u={url}")
+
+    assert r.status_code == 403
+    assert not scanned, "스캔도 못 한 아카이브가 통과 경로로 샜다"
+
+
 # ──────────────────────────────
 # Bandit 레이어 (재웅 담당분)
 # ──────────────────────────────
@@ -359,13 +385,71 @@ def test_run_bandit_caps_high_severity_to_medium(tmp_path):
     requests 의 os.system() 을 일부러 MEDIUM 으로 낮췄던 것과 같은 오차단이 재현된다.
     """
     (tmp_path / "mod.py").write_text("import ftplib\n", encoding="utf-8")
-    findings = scan._run_bandit(tmp_path)
+    findings, truncated = scan._run_bandit(tmp_path)
 
+    assert truncated is None
     assert findings, "ftplib import 는 bandit 이 B402 HIGH 로 잡아야 한다"
     finding = next(f for f in findings if f.rule == "B402")
     assert finding.cwe.startswith("CWE-")
     assert finding.severity == Severity.MEDIUM  # HIGH -> 캡 확인
     assert finding.location.startswith("mod.py:")  # 절대경로가 아니라 상대경로
+
+
+def test_run_bandit_skips_noise_directories(tmp_path):
+    """tests/examples/docs 는 배포되더라도 install·import 시점에 실행되지 않는다.
+
+    이 배선이 없으면 flask 한 패키지에서 1006 findings 가 나오고, 대부분이 examples 안의
+    B101 이라 진짜 신호가 묻힌다.
+    """
+    payload = "import ftplib\n"
+    (tmp_path / "real.py").write_text(payload, encoding="utf-8")
+    for noise in ("tests", "examples", "docs"):
+        (tmp_path / noise).mkdir()
+        (tmp_path / noise / "mod.py").write_text(payload, encoding="utf-8")
+    # 디렉터리 이름 정확 일치여야 한다 — "docs" 로 시작하는 모듈은 진짜 배포 코드다.
+    (tmp_path / "docs_helper.py").write_text(payload, encoding="utf-8")
+
+    findings, _ = scan._run_bandit(tmp_path)
+    scanned = {f.location.split(":")[0] for f in findings}
+    assert scanned == {"real.py", "docs_helper.py"}
+
+
+def test_run_bandit_exclusion_is_relative_to_package_root(tmp_path):
+    """제외 판정은 **패키지 루트 기준 상대경로**로만 해야 한다.
+
+    bandit 의 excluded_paths 는 절대경로 부분문자열로 비교하기 때문에, 추출 임시
+    디렉터리 경로에 우연히 'docs' 가 끼면 패키지 전체가 조용히 스킵되고 응답에는
+    "findings 없음"만 남는다 — 검사 못 한 것이 깨끗한 것으로 둔갑하는 최악의 실패다.
+    """
+    root = tmp_path / "docs" / "pkg-1.0"   # 루트 **위쪽** 경로에 제외 이름이 섞인 상황
+    root.mkdir(parents=True)
+    (root / "setup.py").write_text("import ftplib\n", encoding="utf-8")
+
+    findings, _ = scan._run_bandit(root)
+    assert [f.location.split(":")[0] for f in findings] == ["setup.py"]
+
+
+def test_run_bandit_skips_oversized_files_and_says_so(tmp_path, monkeypatch):
+    """크기 상한에 걸린 파일은 건너뛰되, 건너뛴 사실이 반드시 밖으로 나가야 한다."""
+    monkeypatch.setattr(scan, "MAX_BANDIT_FILE_BYTES", 200)
+    (tmp_path / "small.py").write_text("import ftplib\n", encoding="utf-8")
+    (tmp_path / "huge.py").write_text("import ftplib\n" + "# pad\n" * 200, encoding="utf-8")
+
+    findings, truncated = scan._run_bandit(tmp_path)
+    assert [f.location.split(":")[0] for f in findings] == ["small.py"]
+    assert truncated and "huge.py" in truncated
+
+
+def test_run_bandit_budget_stops_early_and_says_so(tmp_path):
+    """예산을 0 으로 주면 한 파일도 돌기 전에 멈추고, 그 사실이 사유로 남아야 한다.
+
+    조용히 빈 리스트를 돌려주면 "검사했는데 깨끗함"과 구분이 안 된다.
+    """
+    (tmp_path / "mod.py").write_text("import ftplib\n", encoding="utf-8")
+
+    findings, truncated = scan._run_bandit(tmp_path, budget=0.0)
+    assert findings == []
+    assert truncated and "예산 초과" in truncated
 
 
 async def test_layer_bandit_survives_errors():
@@ -381,6 +465,60 @@ async def test_layer_bandit_survives_errors():
     result = await scan._layer_bandit(ScanRequest(name="x", version="1"), BoomCtx(), errors)
     assert result == []
     assert errors and errors[0].startswith("bandit:")
+
+
+async def test_layer_bandit_reports_truncation_as_layer_error(tmp_path):
+    """_run_bandit 의 미완료 사유는 layer_errors 로 흘러나가야 한다 —
+    _layer_static 이 PyPIError 를 다루는 방식과 같은 정책.
+    """
+
+    class Ctx:
+        async def extracted_path(self):
+            return tmp_path
+
+    (tmp_path / "mod.py").write_text("import ftplib\n", encoding="utf-8")
+    errors: list[str] = []
+    with mock.patch.object(scan, "BANDIT_BUDGET_SECONDS", 0.0):
+        await scan._layer_bandit(ScanRequest(name="x", version="1"), Ctx(), errors)
+    assert errors and "예산 초과" in errors[0]
+
+
+async def test_layer_bandit_does_not_block_the_event_loop(tmp_path):
+    """bandit 은 동기 CPU 작업이라 스레드로 내보내야 한다.
+
+    코루틴 안에서 그대로 부르면 gather 로 묶은 나머지 레이어가 전부 그 시간만큼 멈추고,
+    같은 프로세스의 /health 와 프록시 스트리밍도 같이 죽는다(rich 실측 15.6초).
+    여기서는 bandit 이 도는 동안 이벤트 루프가 다른 태스크를 실제로 돌리는지 본다.
+    """
+    (tmp_path / "mod.py").write_text("import ftplib\n", encoding="utf-8")
+
+    class Ctx:
+        async def extracted_path(self):
+            return tmp_path
+
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.001)
+            ticks += 1
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        # _run_bandit 이 스레드에서 도는 동안만 루프가 살아있을 수 있다.
+        with mock.patch.object(scan, "_run_bandit", _slow_bandit):
+            await scan._layer_bandit(ScanRequest(name="x", version="1"), Ctx(), [])
+    finally:
+        beat.cancel()
+
+    assert ticks > 0, "bandit 이 도는 동안 이벤트 루프가 멈춰 있었다"
+
+
+def _slow_bandit(root, budget=None):
+    """스레드로 나갔는지 보기 위한 대역 — 동기로 0.2초를 태운다."""
+    time.sleep(0.2)
+    return [], None
 
 
 def test_scan_merges_bandit_findings_with_static(client, monkeypatch):

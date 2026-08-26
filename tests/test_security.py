@@ -89,6 +89,50 @@ def test_normal_body_passes_size_limit(client):
     assert r.status_code == 422  # 크기는 통과, 내용 검증에서 걸림
 
 
+def test_chunked_body_cannot_bypass_the_size_limit(client):
+    """Content-Length 만 검사하면 헤더 하나로 우회된다.
+
+    ``Transfer-Encoding: chunked`` 요청에는 Content-Length 가 아예 없어서 헤더 검사를
+    그냥 통과하고, 본문 전량이 그대로 메모리에 올라간다 — 막으려던 DoS 경로가 열려 있는
+    셈이다. 실제로 도착한 바이트를 세는지 확인한다.
+    """
+
+    def chunks():
+        for _ in range(20):
+            yield b"x" * 4096  # 합계 80 KB > MAX_BODY_BYTES
+
+    r = client.post(
+        "/api/v1/scan", content=chunks(), headers={"Content-Type": "application/json"}
+    )
+    assert "content-length" not in {k.lower() for k in r.request.headers}
+    assert r.status_code == 413
+    assert r.json()["error"] == "payload_too_large"
+
+
+def test_chunked_body_under_the_limit_still_works(client):
+    """크기 검사가 정상적인 chunked 요청까지 막으면 안 된다."""
+
+    def chunks():
+        yield b'{"name": "requests",'
+        yield b' "version": "2.31.0"}'
+
+    r = client.post(
+        "/api/v1/scan", content=chunks(), headers={"Content-Type": "application/json"}
+    )
+    assert r.status_code != 413
+
+
+def test_malformed_content_length_is_refused(client):
+    """길이를 신뢰할 수 없는 요청은 통과시키지 않는다."""
+    r = client.post(
+        "/api/v1/scan",
+        content=b"{}",
+        headers={"Content-Type": "application/json", "Content-Length": "not-a-number"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"] == "bad_request"
+
+
 # ──────────────────────────────
 # CLI check-file 파서
 # ──────────────────────────────
