@@ -51,6 +51,11 @@ jobs:
         # check-file 이 정확히 exit 1 (차단) 을 반환해야 게이트가 살아있는 것.
         # exit 0 (통과) 은 게이트 사망, exit 2 (연결 실패 등) 는 환경 문제 —
         # 둘을 구분하지 않으면 "서버가 안 떠서 난 에러"를 차단 성공으로 오인한다.
+        # SU_API_URL 을 명시하는 이유: CLI 의 기본값은 서버 없이 도는 로컬 실행이다.
+        # 이 잡이 증명하려는 건 "게이트 배선이 살아있는가" — 즉 API 서버를 거치는 경로라,
+        # 여기서는 로컬로 새지 않게 서버를 못박아 둔다.
+        env:
+          SU_API_URL: http://localhost:8000
         run: |
           set +e
           uv run python -m cli.su_scan check-file samples/demo_requirements.txt
@@ -67,6 +72,8 @@ jobs:
           fi
 
       - name: Gate must PASS a clean file
+        env:
+          SU_API_URL: http://localhost:8000
         run: uv run python -m cli.su_scan check-file samples/clean_requirements.txt
 
       - name: Server log (on failure)

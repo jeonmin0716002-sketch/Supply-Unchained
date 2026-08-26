@@ -332,7 +332,8 @@ Supply-Unchained/
 │   ├── scorer.py           #   규칙 기반 가중치
 │   └── popular_packages.py #   typosquat 비교 대상
 │
-├── cli/su_scan.py          # CLI (명시 호출 진입점)
+├── cli/su_scan.py          # CLI (명시 호출 진입점 · pip 래퍼용 guard)
+├── tools/                  # 셸 래퍼 (pip install 가로채기)
 ├── dashboard/index.html    # SBOM 시각화 (초기 버전)
 │
 ├── samples/                # 악성 패턴 샘플 (전부 무해한 픽스처)
@@ -378,6 +379,72 @@ uv run ruff check .
 
 OSV·PyPI 모두 인증이 필요 없어 `.env` 설정 없이 동작합니다.
 `SU_OFFLINE_DEMO=1` 만 있으면 네트워크 없이 데모가 됩니다.
+
+### pip install 가로채기 (셸 래퍼)
+
+`pip install` 을 치면 설치 **전에** 스캔이 끼어들게 만드는 셸 래퍼입니다. block 이면
+설치를 막고, warn 이면 y/N 로 물어봅니다. `pip list` 처럼 install 이 아닌 명령은
+그대로 진짜 pip 으로 넘어갑니다.
+
+**PowerShell** (Windows 기본)
+
+```powershell
+cd C:\Supply_unchained
+. .\tools\pip-guard.ps1        # 이 세션에만 적용
+```
+
+창을 열 때마다 자동으로 걸리게 하려면 프로필에 등록합니다.
+
+```powershell
+# 프로필 파일이 없으면 먼저 생성
+if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Force $PROFILE }
+notepad $PROFILE
+# 아래 한 줄 추가 (경로는 각자 클론 위치로)
+. C:\Supply_unchained\tools\pip-guard.ps1
+```
+
+해제는 `Remove-Item Function:\pip`, 프로필에서 그 줄을 지우면 영구 해제됩니다.
+
+> `$PROFILE` 경로는 셸마다 다릅니다 — Windows PowerShell 5.1 은
+> `문서\WindowsPowerShell\`, PowerShell 7(`pwsh`)은 `문서\PowerShell\` 입니다.
+> 등록해도 안 걸리면 **다른 쪽 셸의 프로필에 넣은 것**이니 `$PROFILE` 을 직접 찍어
+> 확인하세요. 문서 폴더가 OneDrive 로 리디렉션돼 있으면 경로가 OneDrive 아래로 잡힙니다.
+
+**bash / zsh / Git Bash**
+
+```bash
+source tools/pip-guard.sh                                  # 이 세션에만
+echo "source $(pwd)/tools/pip-guard.sh" >> ~/.bashrc       # 영구
+```
+
+해제는 `unset -f pip`.
+
+동작 예시:
+
+```
+$ pip install pyyaml==5.3.1
+┌ 설치 전 스캔 — 1개 ─────────────────────────────────────────────┐
+│ pyyaml==5.3.1 │ warn │ 20 │ 알려진 취약점 2건 (최고 심각도: critical) │
+└─────────────────────────────────────────────────────────────────┘
+경고가 있는 패키지: pyyaml==5.3.1 — 설치할까요? [y/N]:
+```
+
+알아둘 점:
+
+* **`cmd.exe` 는 지원하지 않습니다.** PowerShell 또는 Git Bash 를 쓰세요.
+* 스캐너는 이 저장소의 `.venv` 에서 돌지만, **설치는 지금 서 있는 환경에 들어갑니다.**
+  래퍼가 진짜 pip 경로를 찾아 넘기기 때문입니다.
+* 로컬 경로·URL·`git+` 설치는 스캔 대상이 아니며, 넘어갈 때 "스캔하지 않음"으로
+  화면에 표시됩니다 — 조용히 통과시키지 않습니다.
+* `requests>=2.0` 처럼 버전이 못박히지 않은 스펙은 pip 이 무엇을 고를지 알 수 없어
+  최신 버전을 스캔하고 `(최신 기준)` 으로 표시합니다.
+
+래퍼 없이 한 번만 쓰려면 CLI 를 직접 불러도 됩니다.
+
+```bash
+uv run python -m cli.su_scan install pyyaml==5.3.1   # 스캔 후 설치
+uv run python -m cli.su_scan check pyyaml==5.3.1     # 스캔만
+```
 
 ### 그라운드 룰
 

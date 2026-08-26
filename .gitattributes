@@ -1,0 +1,9 @@
+# 셸 스크립트는 반드시 LF. Windows 에서 CRLF 로 체크아웃되면 bash 가 줄 끝의 \r 까지
+# 토큰에 포함시켜 source 하는 순간 깨진다 (tools/pip-guard.sh 가 정확히 그 경우).
+*.sh text eol=lf
+
+# PowerShell 은 CRLF 가 자연스럽고, LF 여도 동작한다 — 플랫폼 기본값에 맡긴다.
+*.ps1 text
+
+# 줄바꿈이 의미를 갖는 나머지는 Git 기본 정규화(LF 저장)를 그대로 사용.
+* text=auto

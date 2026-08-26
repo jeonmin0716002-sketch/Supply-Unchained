@@ -344,3 +344,24 @@ async def test_live_osv_lookup():
     """Opt-in: `uv run pytest -m live`. Hits the real OSV.dev API."""
     vulns = await query_osv("requests", "2.30.0", ecosystem=Ecosystem.PIP)
     assert any(v.id.startswith(("GHSA", "CVE", "PYSEC")) for v in vulns)
+
+
+def test_analyze_path_skips_dirs_that_never_execute(tmp_path):
+    """tests/examples/docs 안의 코드는 install·import 시점에 실행되지 않는다.
+
+    테스트 스위트는 eval()·exec() 를 쓰는 게 정상이라 그 탐지는 신호가 아니라 노이즈고,
+    진짜 발견을 화면 밖으로 밀어낸다. PyYAML 5.3.1 실측: 17건 -> 10건, 사라진 7건이
+    전부 tests/ 안의 eval()/exec() 였고 lib/yaml/__init__.py 의 pickle.load() 6건은 남았다.
+    api/routers/scan.py 의 Bandit 레이어와 같은 정책 — 두 정적 레이어가 "패키지 코드"의
+    범위를 다르게 보면 안 된다.
+    """
+    payload = "import pickle\ndef f(b):\n    return pickle.loads(b)\n"
+    (tmp_path / "real.py").write_text(payload, encoding="utf-8")
+    for noise in ("tests", "examples", "docs"):
+        (tmp_path / noise).mkdir()
+        (tmp_path / noise / "mod.py").write_text(payload, encoding="utf-8")
+    # 디렉터리 이름 정확 일치여야 한다 — docs 로 시작하는 모듈은 진짜 배포 코드다.
+    (tmp_path / "docs_helper.py").write_text(payload, encoding="utf-8")
+
+    scanned = {f.location.split(":")[0] for f in analyze_path(tmp_path)}
+    assert scanned == {"real.py", "docs_helper.py"}

@@ -28,6 +28,23 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 #: Directory names that never contain package code worth scanning.
 SKIP_DIRS = frozenset({".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "node_modules"})
 
+#: Directories that ship inside an sdist but are never executed by ``pip install``
+#: or by importing the package. Their contents are real code, so the rules do fire
+#: on them -- and the findings are noise: a test suite is *supposed* to call
+#: ``eval()`` and ``exec()``. Measured on PyYAML 5.3.1: 17 findings before, 10 after,
+#: and the 7 that went away were all ``exec()``/``eval()`` inside ``tests/`` while the
+#: 6 real ones (``pickle.load()`` in ``lib/yaml/__init__.py``) stayed.
+#:
+#: This is a deliberate blind spot, so state it plainly: a payload parked in a
+#: directory named ``tests/`` is not scanned by these rules. It is still not a free
+#: pass -- code there does not run unless something outside reaches into it, and
+#: whatever does the reaching (``setup.py``, an install hook, a ``.pth``) lives
+#: outside these directories and is scanned.
+#:
+#: Kept in sync with ``_BANDIT_EXCLUDE_DIRS`` in ``api/routers/scan.py``; the two
+#: static layers should not disagree about what counts as package code.
+NOT_EXECUTED_DIRS = frozenset({"tests", "test", "examples", "docs", "doc"})
+
 #: Only these extensions are read; everything else is binary/noise for now.
 TEXT_SUFFIXES = frozenset({".py", ".pth", ".toml", ".cfg", ".txt", ".sh", ".bat", ".ps1"})
 
@@ -47,7 +64,11 @@ def _iter_files(root: Path):
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+        rel_parts = path.relative_to(root).parts
+        if any(part in SKIP_DIRS for part in rel_parts):
+            continue
+        # Directory names only -- ``docs.py`` is a shipped module, not a docs folder.
+        if any(part in NOT_EXECUTED_DIRS for part in rel_parts[:-1]):
             continue
         if path.suffix.lower() not in TEXT_SUFFIXES:
             continue

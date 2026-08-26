@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Supply-Unchained — 스캔 콘솔</title>
+<title>supply-unchained</title>
 <style>
   :root{
     --bg:#10141D; --surface:#1A2130; --surface2:#212A3D; --line:#2B364D;
@@ -20,19 +20,16 @@
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 
   /* ── 헤더: 워드마크 + 끊어진 체인 시그니처 ── */
-  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:26px}
   .wordmark{font-family:var(--mono);font-size:clamp(20px,3.4vw,28px);font-weight:700;
             letter-spacing:.06em}
-  .wordmark .cut{color:var(--block)}
   .tagline{color:var(--muted);font-size:13px}
-  #chain{display:block;margin:10px 0 26px}
 
-  .grid{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:22px}
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:22px}
   @media(max-width:840px){.grid{grid-template-columns:1fr}}
 
   .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px}
-  h2{margin:0 0 14px;font-size:13px;font-weight:600;letter-spacing:.12em;color:var(--muted);
-     text-transform:uppercase;font-family:var(--mono)}
+  h2{margin:0 0 14px;font-size:13px;font-weight:600;color:var(--muted)}
 
   /* ── 스캔 폼 ── */
   .scanform{display:flex;gap:8px;flex-wrap:wrap}
@@ -62,10 +59,15 @@
                 padding:10px 14px;color:var(--warn);font-size:13.5px}
   details{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
   summary{cursor:pointer;color:var(--muted);font-size:13px;font-family:var(--mono)}
-  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13.5px}
-  th{color:var(--muted);font-weight:600;text-align:left;font-size:12px;letter-spacing:.05em}
+  .tablewrap{overflow-x:auto;margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{color:var(--muted);font-weight:600;text-align:left;font-size:12px;white-space:nowrap}
   th,td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  /* 긴 sdist 경로(PyYAML-5.3.1/lib3/yaml/__init__.py:142)가 통짜로 컬럼을 밀어내
+     '내용' 칸을 카드 밖으로 밀어내던 문제. 어디서든 끊기게 해서 표 안에 가둔다. */
+  td{overflow-wrap:anywhere}
   td.mono, .mono{font-family:var(--mono)}
+  td.loc{min-width:210px} td.detail{min-width:180px}
   .sev-high,.sev-critical{color:var(--block)} .sev-medium{color:var(--warn)} .sev-low{color:var(--muted)}
 
   /* ── 이력 ── */
@@ -79,31 +81,24 @@
   .hist-meta{margin-left:auto;color:var(--muted);font-size:12px;font-family:var(--mono);flex:none}
   .empty{color:var(--muted);font-size:13.5px;padding:8px 2px}
 
-  @media(prefers-reduced-motion:no-preference){
-    #result .card-anim{animation:rise .25s ease-out}
-    @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div class="wordmark">SUPPLY<span class="cut">⛓︎</span>UNCHAINED</div>
-    <div class="tagline">설치되기 전에 끊어낸다 — pip 공급망 스캔 콘솔</div>
+    <div class="wordmark">supply-unchained</div>
+    <div class="tagline">pip 패키지 스캔</div>
   </header>
 
-  <!-- 시그니처: 체인. 판정에 따라 마지막 스캔 결과가 사슬을 '끊는다' -->
-  <svg id="chain" width="100%" height="26" viewBox="0 0 1060 26" preserveAspectRatio="xMidYMid meet"
-       role="img" aria-label="체인 상태 표시"></svg>
 
   <div class="grid">
     <section>
       <div class="card">
-        <h2>Scan</h2>
+        <h2>스캔</h2>
         <div class="scanform">
           <input id="pkgName" placeholder="패키지 이름 (예: reqeusts)" aria-label="패키지 이름">
           <input id="pkgVer" placeholder="버전 (예: 1.0.0)" aria-label="버전" style="flex:0 1 140px">
-          <button id="scanBtn">스캔</button>
+          <button id="scanBtn">실행</button>
         </div>
         <p class="hint">CLI: <code>python -m cli.su_scan check &lt;pkg&gt;==&lt;ver&gt;</code> ·
            pip 프록시: <code>pip install --index-url http://localhost:8000/simple/ &lt;pkg&gt;</code></p>
@@ -112,8 +107,8 @@
     </section>
 
     <aside class="card">
-      <h2>Scan History</h2>
-      <div id="history"><p class="empty">아직 스캔 이력이 없습니다. 첫 스캔을 실행해 보세요.</p></div>
+      <h2>이력</h2>
+      <div id="history"><p class="empty">이력 없음</p></div>
     </aside>
   </div>
 </div>
@@ -123,51 +118,31 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
-/* ── 시그니처 체인: safe=연결, warn=균열, block=절단 ── */
-function drawChain(state){
-  const svg = $("#chain"), W = 1060, links = 17, w = W/links;
-  const color = state==="block" ? "var(--block)" : state==="warn" ? "var(--warn)"
-              : state==="safe" ? "var(--safe)" : "var(--line)";
-  let out = "";
-  for(let i=0;i<links;i++){
-    const cx = i*w + w/2, broken = state==="block" && i===Math.floor(links/2);
-    if(broken){
-      out += `<path d="M ${cx-w/2+6} 13 q 6 -9 10 -2" stroke="${color}" stroke-width="2.5" fill="none"/>`
-           + `<path d="M ${cx+w/2-16} 15 q 6 9 10 2" stroke="${color}" stroke-width="2.5" fill="none"/>`;
-    }else{
-      out += `<ellipse cx="${cx}" cy="13" rx="${w/2-4}" ry="8" stroke="${color}"
-               stroke-width="2.5" fill="none" ${state==="warn"&&i%4===2?'stroke-dasharray="6 5"':''}/>`;
-    }
-  }
-  svg.innerHTML = out;
-}
-drawChain("idle");
-
 /* ── 결과 렌더 ── */
 const sevCls = s => "sev-"+esc(s);
 function renderResult(r){
   const v = r.verdict;
   const vulns = r.vulnerabilities?.length ? `
     <details open><summary>알려진 취약점 ${r.vulnerabilities.length}건</summary>
-    <table><tr><th>ID</th><th>CWE</th><th>심각도</th><th>요약</th><th>패치 버전</th></tr>
+    <div class="tablewrap"><table><tr><th>ID</th><th>CWE</th><th>심각도</th><th>요약</th><th>패치 버전</th></tr>
     ${r.vulnerabilities.map(x=>`<tr><td class="mono">${esc(x.id)}</td>
       <td class="mono">${esc((x.cwe_ids||[]).join(", ")||"-")}</td>
       <td class="${sevCls(x.severity)}">${esc(x.severity)}</td>
-      <td>${esc(x.summary||"-")}</td><td class="mono">${esc(x.fixed_version||"-")}</td></tr>`).join("")}
-    </table></details>` : "";
+      <td class="detail">${esc(x.summary||"-")}</td><td class="mono">${esc(x.fixed_version||"-")}</td></tr>`).join("")}
+    </table></div></details>` : "";
   const finds = r.static_findings?.length ? `
     <details open><summary>정적분석 탐지 ${r.static_findings.length}건</summary>
-    <table><tr><th>규칙</th><th>CWE</th><th>심각도</th><th>위치</th><th>내용</th></tr>
+    <div class="tablewrap"><table><tr><th>규칙</th><th>CWE</th><th>심각도</th><th>위치</th><th>내용</th></tr>
     ${r.static_findings.map(x=>`<tr><td class="mono">${esc(x.rule)}</td><td class="mono">${esc(x.cwe)}</td>
       <td class="${sevCls(x.severity)}">${esc(x.severity)}</td>
-      <td class="mono">${esc(x.location)}</td><td>${esc(x.detail||"-")}</td></tr>`).join("")}
-    </table></details>` : "";
+      <td class="mono loc">${esc(x.location)}</td><td class="detail">${esc(x.detail||"-")}</td></tr>`).join("")}
+    </table></div></details>` : "";
   const sig = r.risk_signals || {};
-  const errs = r.layer_errors?.length ? `<div class="layer-errors">⚠ 일부 탐지 레이어가 실패한 상태의
+  const errs = r.layer_errors?.length ? `<div class="layer-errors">일부 탐지 레이어가 실패한 상태의
     판정입니다 — ${r.layer_errors.map(esc).join(" · ")}</div>` : "";
 
   $("#result").innerHTML = `
-  <div class="card card-anim">
+  <div class="card">
     <div class="verdict-head">
       <span class="badge v-${esc(v)}">${v==="safe"?"SAFE":v==="warn"?"WARN":"BLOCK"}</span>
       <span class="pkg">${esc(r.name)}==${esc(r.version)}</span>
@@ -185,7 +160,6 @@ function renderResult(r){
       </table></details>
     <p class="hint mono">scan_id=${r.scan_id} · ${esc((r.scanned_at||"").slice(0,19).replace("T"," "))} UTC</p>
   </div>`;
-  drawChain(v);
 }
 
 /* ── 이력 ── */
@@ -214,7 +188,7 @@ async function scan(){
       버전을 모르면 CLI의 <span class="mono">check &lt;pkg&gt;</span>가 최신 버전을 찾아줍니다.</p></div>`;
     return;
   }
-  const btn = $("#scanBtn"); btn.disabled = true; btn.textContent = "스캔 중…";
+  const btn = $("#scanBtn"); btn.disabled = true; btn.textContent = "실행 중…";
   $("#result").innerHTML = `<div class="card"><p class="empty">스캔 중 — 아카이브를 내려받아
     정적분석까지 수행하므로 수십 초 걸릴 수 있습니다.</p></div>`;
   try{
@@ -227,7 +201,7 @@ async function scan(){
   }catch(e){
     $("#result").innerHTML = `<div class="card"><p class="empty">스캔 실패: ${esc(e.message)} —
       API 서버가 실행 중인지 확인해 주세요.</p></div>`;
-  }finally{ btn.disabled = false; btn.textContent = "스캔"; }
+  }finally{ btn.disabled = false; btn.textContent = "실행"; }
 }
 $("#scanBtn").addEventListener("click", scan);
 [["#pkgName"],["#pkgVer"]].forEach(([s])=>$(s).addEventListener("keydown",e=>{if(e.key==="Enter")scan();}));
