@@ -144,6 +144,13 @@ npm 등 확장을 대비했습니다.
 }
 ```
 
+**입력값 화이트리스트 검증** — `name` 은 PEP 503 정규화 규칙(영숫자로 시작·끝,
+중간에 `. _ -` 만), `version` 은 PEP 440 문자셋(영숫자 토큰을 `. _ + ! -` 로 연결)만
+허용합니다. 셸 메타문자 · 공백 · 옵션 형태(`-`로 시작) 입력은 파이프라인에 들어가기
+전에 422로 거부됩니다. 패키지명/버전은 이후 PyPI URL 조립, `pip install` subprocess
+인자, 프록시 파일명 파싱 등 여러 싱크로 흐르므로, 입구에서 잘라내는 것이
+defense-in-depth 의 기본이라는 판단입니다(Command Injection 원천 차단).
+
 ### 응답
 
 ```jsonc
@@ -224,44 +231,9 @@ high로 잡았다가, 실제 `requests` sdist를 스캔했더니 `block` 이 나
 "없음"이야말로 경고할 가치가 있는 상태입니다. 이름 기반 typosquat 점수는 이 경우에도
 계속 동작합니다.
 
-### 스캐너 자신을 지키는 설계
-
-공급망 스캐너는 적대적인 입력을 일상적으로 다룹니다. 스캔 대상이 스캐너를 공격하는
-경로를 먼저 막아둡니다.
-
-| 방어 | 동작 |
-|---|---|
-| 입력값 화이트리스트 | 패키지명은 PEP 503, 버전은 PEP 440 문자만 허용 → 위반 시 **422** |
-| 요청 본문 크기 제한 | 10 KB 초과 시 **413**. 헤더가 아니라 실제 수신 바이트를 셈 |
-| 아카이브 안전 추출 | 경로 탈출·심볼릭 링크 차단, 압축 해제 크기·멤버 수 상한 |
-| 정적분석 실행 예산 | 파일 수·파일 크기·시간 상한. 초과분은 `layer_errors` 로 보고 |
-
-이름과 버전은 PyPI URL 조립, OSV 질의, `pip install` 인자, 프록시의 파일명 파싱까지
-여러 계층을 타고 흐릅니다. 지금은 `shell=False` 리스트 호출이라 인젝션이 성립하지
-않지만, 싱크가 하나 늘어나는 순간 성립합니다. 그래서 입구에서 잘라냅니다.
-
-본문 크기 제한을 `Content-Length` 헤더로만 검사하면 `Transfer-Encoding: chunked`
-요청이 그대로 통과합니다. ASGI `receive` 를 감싸 실제로 도착한 바이트를 세는 이유입니다.
-
-### CI 게이트
-
-| 워크플로우 | 하는 일 |
-|---|---|
-| `ci.yml` | ruff · bandit 자체 스캔 · pytest |
-| `supply-chain-scan.yml` | 매 PR마다 게이트가 악성 샘플을 **실제로 차단하는지** 검증 |
-
-두 번째가 이 프로젝트의 핵심 주장을 매 PR마다 증명합니다. 악성 샘플에서 `exit 1`(차단),
-정상 파일에서 `exit 0`(통과)을 요구하며, 둘을 구분하지 않으면 "서버가 안 떠서 난 에러"를
-차단 성공으로 오인하게 됩니다.
-
-**미검증 패키지를 CI 러너에 설치하지 않습니다.** 스캔 결과만으로 판단합니다 — 설치해서
-확인하는 순간 그 러너가 공급망 공격의 실행 지점이 됩니다.
-
-requirements 파일 전체를 게이트에 태우려면:
-
-```bash
-uv run python -m cli.su_scan check-file requirements.txt   # block 하나라도 있으면 exit 1
-```
+**요청 크기 제한 (DoS 방지)** — 스캔 요청 본문은 원래 문자열 몇 개뿐이므로, 10KB 를
+넘는 body 는 파싱 이전 단계에서 413으로 차단합니다. 프록시의 대용량 파일 전송은
+"응답" 스트리밍이라 이 제한과 무관합니다.
 
 ### 오프라인 데모 모드
 
@@ -271,6 +243,34 @@ SU_OFFLINE_DEMO=1 uv run uvicorn api.main:app
 
 네트워크 없이 mock 데이터로 동작합니다(발표장 회선 사고 대비). 이 모드일 때는 응답의
 `verdict_reasons` 에 mock임이 명시됩니다.
+
+---
+
+## CI/CD — 자동 테스트와 공급망 게이트
+
+GitHub Actions 워크플로우 2종이 모든 push/PR 에서 자동으로 돕니다.
+
+| 워크플로우 | 하는 일 |
+|---|---|
+| `ci.yml` | ruff 린트 + pytest 전체 실행 |
+| `supply-chain-scan.yml` | 오프라인 데모 모드로 API를 띄우고, 악성 샘플 requirements 는 반드시 차단(exit 1)되고 정상 샘플은 반드시 통과(exit 0)하는지 검증 — "게이트가 살아있는가" 자체를 매 PR마다 증명 |
+
+공급망 게이트의 설계 원칙:
+
+* **미검증 패키지를 절대 `pip install` 하지 않습니다.** 스캔 결과만으로 판단합니다 —
+  미검증 패키지를 CI 러너에서 설치·실행하는 것 자체가 공급망 공격 벡터가 되기
+  때문이며, "설치되기 전에 끊어낸다"는 프로젝트 원칙을 CI에서도 지킵니다.
+* exit 코드를 1(정상 차단) / 0(게이트 사망 → CI 실패) / 2(서버 연결 실패 등 환경
+  문제 → CI 실패)로 구분해, 환경 오류를 차단 성공으로 오인하지 않습니다.
+* CLI 의 `check-file` 명령이 게이트의 실행 단위입니다. 이 워크플로우를 다른 프로젝트
+  레포에 복사하면, 그 팀의 `requirements.txt` 에 악성 패키지를 추가하는 PR 을
+  자동으로 막는 실사용 통합 지점이 됩니다 (pip 프록시가 "설치 시점" 개입이라면,
+  이쪽은 "PR 시점" 개입).
+
+```bash
+# 로컬에서 게이트와 동일한 검사 실행
+uv run python -m cli.su_scan check-file requirements.txt   # block 있으면 exit 1
+```
 
 ---
 
@@ -313,9 +313,9 @@ SU_OFFLINE_DEMO=1 uv run uvicorn api.main:app
 
 | 파트 | 주요 작업 |
 |---|---|
-| 보안 코어 엔진 | CVE/OSV 매칭, 정적분석기(Bandit + 커스텀 규칙), 종합 판정, CWE 매핑 |
+| 보안 코어 엔진 | CVE/OSV 매칭, 정적분석기(Bandit + 커스텀 규칙), 종합 판정, 커스텀 룰 CWE 매핑 |
 | 데이터·스코어링 | PyPI 메타데이터 수집, 위험 신호 정의, 규칙 기반 위험도 스코어러 |
-| API·클라이언트 | FastAPI 통합, CLI/프록시, SBOM 대시보드, Docker·배포, 보안 하드닝·CI 게이트 |
+| API·클라이언트 | FastAPI 통합, CLI/프록시, SBOM 대시보드, Docker·배포, OSV/Bandit 결과 CWE 태깅, 입력값 검증·요청 크기 제한, CI 보안 게이트 |
 
 ---
 
@@ -331,6 +331,10 @@ Supply-Unchained/
 ├── uv.lock                 # 커밋 필수 — 전원 동일 환경
 ├── Dockerfile              # python:3.12-slim
 ├── docker-compose.yml
+│
+├── .github/workflows/
+│   ├── ci.yml                    # 린트 + 테스트 (모든 push/PR)
+│   └── supply-chain-scan.yml     # 공급망 게이트 자동 검증
 │
 ├── api/                    # FastAPI
 │   ├── main.py             #   앱 진입점 (/health, /docs)
@@ -363,7 +367,9 @@ Supply-Unchained/
 │   ├── sample1_install_hook/     # 설치 훅 + 셸 명령
 │   ├── sample2_obfuscated/       # base64 → exec
 │   ├── sample3_pth_autoexec/     # .pth 자동실행
-│   └── sample4_pickle/           # 역직렬화
+│   ├── sample4_pickle/           # 역직렬화
+│   ├── demo_requirements.txt     # CI 게이트용 — 악성 포함 (차단돼야 통과)
+│   └── clean_requirements.txt    # CI 게이트용 — 정상만 (통과돼야 통과)
 │
 ├── tests/                  # pytest (오프라인 기본, `-m live` 로 실 OSV 연동)
 └── docs/                   # 리뷰·통합 문서
