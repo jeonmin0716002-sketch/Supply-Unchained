@@ -81,22 +81,6 @@ flowchart LR
 
 ---
 
-## 경쟁 도구 대비 포지셔닝
-
-| | pip-audit / safety | Socket | Supply-Unchained |
-|---|:---:|:---:|:---:|
-| CVE 매칭 | O | O | O |
-| 제로데이·휴리스틱 탐지 | X | O | O |
-| 설치 시점 사전 차단 | X (사후 스캔) | O | O |
-| 메타데이터 위험도 스코어링 | X | O | O |
-| 오픈소스 · 무료 | O | X (상용) | O |
-| 주 타깃 | 전체 개발자 | 엔터프라이즈 팀 | 개인·학생·중소기업 |
-
-Socket 수준의 설치 시점 사전 차단을 오픈소스로 제공하되, 개인·학생·중소기업이 바로
-쓸 수 있는 경량 대안을 목표로 합니다.
-
----
-
 ## 시스템 아키텍처
 
 세 계층으로 나뉩니다.
@@ -445,30 +429,6 @@ $ pip install pyyaml==5.3.1
 uv run python -m cli.su_scan install pyyaml==5.3.1   # 스캔 후 설치
 uv run python -m cli.su_scan check pyyaml==5.3.1     # 스캔만
 ```
-
-### 그라운드 룰
-
-| 항목 | 규칙 |
-|---|---|
-| Python | 3.12 전원 통일 |
-| 의존성 | uv — `pip install` 직접 사용 금지 |
-| Docker | `python:3.12-slim` (alpine 금지) |
-| 코드·주석·커밋 메시지 | 영어 (public 전환 대비) |
-| README·발표자료 | 한글 (수상 시 영문화) |
-| 브랜치 | 기능 단위는 `feat/<파트>-<기능>` → PR. 문서·소규모 수정은 `main` 직접 푸시 (`main` 보호 미설정) |
-| 커밋 prefix | `feat:` `fix:` `docs:` `refactor:` `test:` |
-| 커밋 트레일러 | AI co-author 표기(`Co-Authored-By: Claude ...`) 금지 — 기여자는 팀원만 |
-| 스키마 변경 | `api/schemas.py` 는 팀 합의 후 |
-
----
-
-## Future Work
-
-- **동적분석(샌드박스)**: 정적분석에서 걸러진 의심 패키지만 격리 컨테이너에서 실제
-  실행 → 네트워크·파일시스템 행위 관찰
-- **멀티 에코시스템**: `ecosystem` 파라미터 기반으로 npm · cargo 등 지원
-- **머신러닝 스코어링**: 라벨 데이터 확보 시 규칙 기반 → 분류 모델 고도화
-- **IDE 플러그인**: 설치 전 에디터 단에서 경고
 
 ---
 
