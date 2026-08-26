@@ -20,6 +20,9 @@ dist/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+# 이력을 비우려고 옆으로 밀어둔 백업본도 같이 제외 — 실수로 커밋되면 남의 로컬
+# 스캔 기록이 레포에 박힌다.
+data/*.bak
 
 # 도구 설정
 .claude/
