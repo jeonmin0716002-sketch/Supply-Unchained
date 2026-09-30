@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from api.schemas import Ecosystem, ScanRequest, Severity, Vulnerability, VulnSource
+from engine.cvss import severity_from_vector
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 DEFAULT_TIMEOUT = 10.0
@@ -36,10 +37,9 @@ _LABEL_TO_SEVERITY = {
 # GIT ranges are excluded on purpose — those carry commit hashes.
 _INSTALLABLE_RANGE_TYPES = {"ECOSYSTEM", "SEMVER"}
 
-# Used when an advisory carries only a CVSS vector string and no coarse label.
-# Deriving a real base score from the vector needs a CVSS implementation; until
-# then we degrade to "medium" rather than silently under- or over-stating risk.
-# TODO(engine): add CVSS v3/v4 vector scoring so this fallback becomes rare.
+# Used when an advisory has neither a coarse label nor a v3.x vector we can
+# score (e.g. v4-only, or malformed). We degrade to "medium" rather than
+# silently under- or over-stating risk.
 _UNKNOWN_SEVERITY = Severity.MEDIUM
 
 
@@ -53,6 +53,18 @@ def _parse_severity(vuln: dict[str, Any]) -> Severity:
         mapped = _LABEL_TO_SEVERITY.get(label.upper())
         if mapped is not None:
             return mapped
+
+    # No label: score the first CVSS v3.x vector, top-level entries first, then
+    # the per-package ones OSV sometimes puts under affected[].
+    entries = list(vuln.get("severity") or [])
+    for affected in vuln.get("affected") or []:
+        entries.extend(affected.get("severity") or [])
+    for entry in entries:
+        if entry.get("type") != "CVSS_V3":
+            continue
+        severity = severity_from_vector(str(entry.get("score") or ""))
+        if severity is not None:
+            return severity
     return _UNKNOWN_SEVERITY
 
 

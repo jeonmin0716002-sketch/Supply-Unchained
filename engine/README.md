@@ -19,6 +19,7 @@
 | 파일 | 역할 |
 |---|---|
 | `cve_matcher.py` | OSV.dev 조회 → `Vulnerability[]` (**네트워크 I/O 전담**) |
+| `cvss.py` | CVSS v3.x 벡터 → base score·심각도 (라벨 없는 권고용) |
 | `static_analyzer.py` | 패키지 트리 순회 + AST 파싱 → `StaticFinding[]` (**진입점**) |
 | `rules/base.py` | 룰 인터페이스 (`FileRule` / `AstRule`) |
 | `rules/install_hooks.py` | `.pth` 자동실행 · `setup.py` cmdclass 훅 |
@@ -62,9 +63,11 @@ OSV는 인덱스 이름(`PyPI`)을 쓰기 때문입니다.
 **1. severity — GitHub은 `MODERATE`, 우리 스키마는 `medium`**
 
 `database_specific.severity`의 `LOW/MODERATE/HIGH/CRITICAL`을 매핑합니다.
-라벨 없이 **CVSS 벡터만** 오는 경우가 있는데, 벡터에서 실제 base score를 계산하려면
-CVSS 구현체가 필요합니다. 지금은 `medium`으로 폴백하고 코드에 TODO를 남겼습니다.
-(과대·과소평가 중 어느 쪽도 하지 않는 중립값)
+라벨 없이 **CVSS 벡터만** 오는 경우에는 `engine/cvss.py` 가 FIRST v3.1 명세의 식대로
+base score를 계산해 등급(9.0↑ critical · 7.0↑ high · 4.0↑ medium · 그 외 low)으로
+바꿉니다. 테스트는 공식 계산기 기준값과 대조합니다. v4.0 벡터는 점수가 매크로벡터 표
+조회 방식이라 구현하지 않았고, 이때나 벡터가 깨진 경우에만 `medium`으로 폴백합니다
+(과대·과소평가 중 어느 쪽도 하지 않는 중립값).
 
 **2. `fixed_version` — 커밋 해시를 버전으로 내보내면 안 됨**
 

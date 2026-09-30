@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from api.schemas import Ecosystem, Severity, VulnSource
-from engine import cve_matcher
+from engine import cve_matcher, cvss
 from engine.cve_matcher import CveLookupError, parse_osv_response, query_osv
 from engine.rules.code_patterns import RULE_DANGEROUS_CALL, RULE_OBFUSCATED
 from engine.rules.install_hooks import RULE_INSTALL_HOOK, RULE_PTH
@@ -279,7 +279,7 @@ OSV_PAYLOAD = {
             "affected": [{"package": {"name": "other-pkg", "ecosystem": "PyPI"}}],
         },
         {
-            # Only a CVSS vector, no coarse label -> documented medium fallback.
+            # Truncated CVSS vector, no coarse label -> documented medium fallback.
             "id": "CVE-0000-0000",
             "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N"}],
         },
@@ -323,8 +323,77 @@ def test_fixed_version_ignores_other_packages():
     assert parse_osv_response(OSV_PAYLOAD, "requests")[1].fixed_version is None
 
 
-def test_cvss_only_entry_falls_back_to_medium():
+def test_unscorable_cvss_entry_falls_back_to_medium():
     assert parse_osv_response(OSV_PAYLOAD, "requests")[2].severity is Severity.MEDIUM
+
+
+@pytest.mark.parametrize(
+    ("vector", "expected"),
+    [
+        # Reference scores from the FIRST CVSS v3.1 calculator.
+        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", 9.8),
+        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H", 10.0),
+        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N", 6.1),
+        ("CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N", 5.5),
+        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N", 5.9),
+        ("CVSS:3.0/AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:L/A:N", 6.4),
+        ("CVSS:3.1/AV:P/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N", 1.6),
+        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N", 0.0),
+    ],
+)
+def test_cvss_base_score_matches_reference(vector, expected):
+    assert cvss.base_score(vector) == expected
+
+
+@pytest.mark.parametrize(
+    "vector",
+    [
+        "CVSS:3.1/AV:N/AC:L/PR:N",  # truncated
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",  # v4: not scored
+        "CVSS:3.1/AV:X/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",  # bad value
+        "garbage",
+    ],
+)
+def test_cvss_rejects_unscorable_vectors(vector):
+    assert cvss.base_score(vector) is None
+
+
+def test_cvss_vector_sets_severity_when_label_missing():
+    payload = {
+        "vulns": [
+            {
+                "id": "CVE-A",
+                "severity": [
+                    {"type": "CVSS_V4", "score": "CVSS:4.0/AV:N"},
+                    {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
+                ],
+            },
+            {
+                "id": "CVE-B",
+                "affected": [
+                    {
+                        "package": {"name": "requests", "ecosystem": "PyPI"},
+                        "severity": [
+                            {
+                                "type": "CVSS_V3",
+                                "score": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                # The coarse label still wins over a vector.
+                "id": "CVE-C",
+                "database_specific": {"severity": "LOW"},
+                "severity": [
+                    {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
+                ],
+            },
+        ]
+    }
+    got = [v.severity for v in parse_osv_response(payload, "requests")]
+    assert got == [Severity.CRITICAL, Severity.MEDIUM, Severity.LOW]
 
 
 def test_git_range_is_not_reported_as_a_fixed_version():
