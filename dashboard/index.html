@@ -81,15 +81,39 @@
   .hist-meta{margin-left:auto;color:var(--muted);font-size:12px;font-family:var(--mono);flex:none}
   .empty{color:var(--muted);font-size:13.5px;padding:8px 2px}
 
+  /* ── 통계 타일 ── */
+  .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:22px}
+  @media(max-width:560px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat .k{color:var(--muted);font-size:12px}
+  .stat .n{font-family:var(--mono);font-size:24px;font-weight:700;margin-top:2px}
+  .stat.s-safe .n{color:var(--safe)} .stat.s-warn .n{color:var(--warn)} .stat.s-block .n{color:var(--block)}
+
+  /* ── 일괄 스캔 (requirements → SBOM) ── */
+  #batch{margin-top:22px}
+  textarea{width:100%;min-height:120px;resize:vertical;background:var(--bg);color:var(--ink);
+           border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+           font-family:var(--mono);font-size:13.5px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  button.ghost{background:none;color:var(--accent);border:1px solid var(--line)}
+  .progress{color:var(--muted);font-size:13px;font-family:var(--mono)}
+  .batch-row{cursor:pointer} .batch-row:hover td{background:var(--surface2)}
+
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="wordmark">supply-unchained</div>
-    <div class="tagline">pip 패키지 스캔</div>
+    <div class="tagline">pip 패키지 스캔 · SBOM</div>
   </header>
 
+  <div class="stats" aria-label="최근 스캔 통계">
+    <div class="stat"><div class="k">최근 스캔</div><div class="n" id="stTotal">-</div></div>
+    <div class="stat s-safe"><div class="k">safe</div><div class="n" id="stSafe">-</div></div>
+    <div class="stat s-warn"><div class="k">warn</div><div class="n" id="stWarn">-</div></div>
+    <div class="stat s-block"><div class="k">block</div><div class="n" id="stBlock">-</div></div>
+  </div>
 
   <div class="grid">
     <section>
@@ -104,6 +128,20 @@
            pip 프록시: <code>pip install --index-url http://localhost:8000/simple/ &lt;pkg&gt;</code></p>
       </div>
       <div id="result" aria-live="polite"></div>
+
+      <div class="card" id="batch">
+        <h2>requirements 일괄 스캔 → SBOM</h2>
+        <textarea id="reqText" aria-label="requirements.txt 내용"
+          placeholder="requirements.txt 내용을 붙여넣으세요&#10;requests==2.30.0&#10;reqeusts==1.0.0"></textarea>
+        <div class="row">
+          <button id="batchBtn">일괄 스캔</button>
+          <button id="sbomBtn" class="ghost" disabled>CycloneDX SBOM 내보내기</button>
+          <span class="progress" id="batchProgress"></span>
+        </div>
+        <p class="hint"><code>name==version</code> 으로 고정된 줄만 스캔합니다(CI 게이트의
+           <code>check-file</code> 과 같은 규칙). 행을 누르면 상세 결과를 봅니다.</p>
+        <div id="batchResult"></div>
+      </div>
     </section>
 
     <aside class="card">
@@ -165,8 +203,10 @@ function renderResult(r){
 /* ── 이력 ── */
 async function loadHistory(){
   try{
-    const rows = await (await fetch("/api/v1/scans?limit=30")).json();
+    const rows = await (await fetch("/api/v1/scans?limit=200")).json();
+    renderStats(rows);
     if(!rows.length) return;
+    rows.length = Math.min(rows.length, 30);
     $("#history").innerHTML = rows.map(r=>`
       <button class="hist-row" data-id="${r.scan_id}">
         <span class="dot d-${esc(r.verdict)}" aria-label="${esc(r.verdict)}"></span>
@@ -203,6 +243,136 @@ async function scan(){
       API 서버가 실행 중인지 확인해 주세요.</p></div>`;
   }finally{ btn.disabled = false; btn.textContent = "실행"; }
 }
+function renderStats(rows){
+  const count = v => rows.filter(r => r.verdict === v).length;
+  $("#stTotal").textContent = rows.length;
+  $("#stSafe").textContent = count("safe");
+  $("#stWarn").textContent = count("warn");
+  $("#stBlock").textContent = count("block");
+}
+
+/* ── requirements 일괄 스캔 ── */
+// cli/su_scan.py check-file 과 같은 규칙: 주석·옵션 줄은 무시, == 로 고정된 줄만 스캔.
+function parseRequirements(text){
+  const pinned = [], skipped = [];
+  for(const raw of text.split(/\r?\n/)){
+    const line = raw.split("#")[0].trim();
+    if(!line || line.startsWith("-")) continue;
+    const m = line.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*==\s*([A-Za-z0-9._+!-]+)\s*(?:;.*)?$/);
+    if(m) pinned.push({name:m[1], version:m[2]});
+    else skipped.push(line);
+  }
+  return {pinned, skipped};
+}
+
+let batchResults = [];
+const VERDICT_RANK = {block:0, warn:1, safe:2};
+
+function renderBatch(skipped){
+  const sorted = [...batchResults].sort((a,b) =>
+    (VERDICT_RANK[a.r?.verdict] ?? -1) - (VERDICT_RANK[b.r?.verdict] ?? -1));
+  const rows = sorted.map((x, i) => x.r ? `
+    <tr class="batch-row" data-i="${batchResults.indexOf(x)}">
+      <td><span class="badge v-${esc(x.r.verdict)}" style="font-size:12px;padding:2px 10px">${esc(x.r.verdict.toUpperCase())}</span></td>
+      <td class="mono">${esc(x.name)}==${esc(x.version)}</td>
+      <td class="mono">${x.r.risk_score}</td>
+      <td class="mono">${x.r.vulnerabilities.length}</td>
+      <td class="mono">${x.r.static_findings.length}</td></tr>` : `
+    <tr><td class="sev-high">ERROR</td><td class="mono">${esc(x.name)}==${esc(x.version)}</td>
+      <td colspan="3" class="detail">${esc(x.error)}</td></tr>`).join("");
+  $("#batchResult").innerHTML = `
+    <div class="tablewrap"><table>
+      <tr><th>판정</th><th>패키지</th><th>위험도</th><th>취약점</th><th>정적분석</th></tr>${rows}
+    </table></div>
+    ${skipped.length ? `<p class="hint">건너뜀 (== 고정 아님): <span class="mono">${skipped.map(esc).join(", ")}</span></p>` : ""}`;
+  document.querySelectorAll(".batch-row").forEach(tr => tr.addEventListener("click", () => {
+    renderResult(batchResults[tr.dataset.i].r);
+    $("#result").scrollIntoView({behavior:"smooth", block:"start"});
+  }));
+}
+
+async function scanOne(item){
+  try{
+    const res = await fetch("/api/v1/scan",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ecosystem:"pip", name:item.name, version:item.version})});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    item.r = await res.json();
+  }catch(e){ item.error = e.message; }
+}
+
+async function batchScan(){
+  const {pinned, skipped} = parseRequirements($("#reqText").value);
+  if(!pinned.length){
+    $("#batchResult").innerHTML = `<p class="empty">name==version 형태의 줄이 없습니다.</p>`;
+    return;
+  }
+  const btn = $("#batchBtn"); btn.disabled = true; $("#sbomBtn").disabled = true;
+  batchResults = pinned.map(p => ({...p}));
+  let done = 0;
+  const progress = () => $("#batchProgress").textContent = `${done}/${batchResults.length} 완료`;
+  progress();
+  // 동시 3건 — 패키지마다 아카이브를 받아 분석하므로 한 번에 다 쏘면 서버가 몰린다.
+  const queue = [...batchResults];
+  await Promise.all(Array.from({length:Math.min(3, queue.length)}, async () => {
+    while(queue.length){ await scanOne(queue.shift()); done++; progress(); }
+  }));
+  const blocked = batchResults.filter(x => x.r?.verdict === "block").length;
+  $("#batchProgress").textContent = `${done}건 완료 · block ${blocked}건`;
+  renderBatch(skipped);
+  btn.disabled = false;
+  $("#sbomBtn").disabled = !batchResults.some(x => x.r);
+  loadHistory();
+}
+
+/* ── CycloneDX 1.5 SBOM ── */
+const purlOf = (name, version) =>
+  `pkg:pypi/${encodeURIComponent(name.toLowerCase().replace(/[-_.]+/g, "-"))}@${encodeURIComponent(version)}`;
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() :
+  "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)));
+
+function buildSbom(){
+  const scanned = batchResults.filter(x => x.r);
+  const components = scanned.map(x => ({
+    type:"library", "bom-ref":purlOf(x.name, x.version),
+    name:x.name, version:x.version, purl:purlOf(x.name, x.version),
+    properties:[
+      {name:"supply-unchained:verdict", value:x.r.verdict},
+      {name:"supply-unchained:risk_score", value:String(x.r.risk_score)},
+      ...x.r.static_findings.map(f => ({name:"supply-unchained:static_finding",
+        value:`${f.rule} ${f.severity} ${f.location}`})),
+    ],
+  }));
+  const vulnerabilities = scanned.flatMap(x => x.r.vulnerabilities.map(v => ({
+    "bom-ref":`${v.id}@${purlOf(x.name, x.version)}`,
+    id:v.id,
+    source:{name:v.source, url:`https://osv.dev/vulnerability/${encodeURIComponent(v.id)}`},
+    ratings:[{severity:v.severity}],
+    ...(v.cwe_ids?.length ? {cwes:v.cwe_ids.map(c => Number(String(c).replace(/\D/g, ""))).filter(Boolean)} : {}),
+    ...(v.summary ? {description:v.summary} : {}),
+    ...(v.fixed_version ? {recommendation:`Upgrade to ${v.fixed_version}`} : {}),
+    affects:[{ref:purlOf(x.name, x.version)}],
+  })));
+  return {
+    bomFormat:"CycloneDX", specVersion:"1.5", serialNumber:`urn:uuid:${uuid()}`, version:1,
+    metadata:{timestamp:new Date().toISOString(),
+      tools:{components:[{type:"application", name:"supply-unchained"}]}},
+    components, vulnerabilities,
+  };
+}
+
+function downloadSbom(){
+  const blob = new Blob([JSON.stringify(buildSbom(), null, 2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `sbom-${new Date().toISOString().slice(0,10)}.cdx.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$("#batchBtn").addEventListener("click", batchScan);
+$("#sbomBtn").addEventListener("click", downloadSbom);
 $("#scanBtn").addEventListener("click", scan);
 [["#pkgName"],["#pkgVer"]].forEach(([s])=>$(s).addEventListener("keydown",e=>{if(e.key==="Enter")scan();}));
 loadHistory();
