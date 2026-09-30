@@ -6,6 +6,9 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 알려진 취약점은 물론 아직 CVE가 없는 신종 악성 패키지까지 사전에 걸러내는
 오픈소스 공급망 보안 시스템.
 
+[![CI](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/ci.yml/badge.svg)](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/ci.yml)
+[![Supply-Chain Scan](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/supply-chain-scan.yml/badge.svg)](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/supply-chain-scan.yml)
+[![Docker Publish](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/docker-publish.yml)
 ![license](https://img.shields.io/badge/license-MIT-blue.svg)
 ![python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![deps](https://img.shields.io/badge/deps-uv-purple.svg)
@@ -22,17 +25,23 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 
 | 구성 요소 | 상태 |
 |---|---|
-| CVE/OSV 매칭 (`engine/cve_matcher.py`) | 동작 |
+| CVE/OSV 매칭 + CVSS v3 점수 계산 (`engine/cve_matcher.py`, `engine/cvss.py`) | 동작 |
 | 정적분석 — 커스텀 규칙 4종 + Bandit (`engine/`, `api/routers/scan.py`) | 동작 |
 | 위험도 스코어링 (`scoring/`) | 동작 |
 | 통합 스캔 API (`POST /api/v1/scan`) | 동작 |
 | CLI (`cli/su_scan.py`) · pip 프록시 (`api/routers/proxy.py`) | 동작 |
 | 스캔 이력 저장 (SQLite, `api/storage.py`) | 동작 |
-| SBOM 대시보드 (`dashboard/index.html`) | 초기 버전 |
-| Docker · CI 2종 (테스트 + 공급망 스캔 게이트) | 동작 |
+| 대시보드 — 단건·requirements 일괄 스캔, CycloneDX SBOM 내보내기 (`dashboard/index.html`) | 동작 |
+| CI 2종 (테스트 + 공급망 스캔 게이트) | 동작 |
+| 컨테이너 이미지 배포 (GHCR, `docker-publish.yml`) | 동작 |
 
-임계값·규칙셋은 검증 샘플로 계속 튜닝 중입니다. 남은 작업은 대시보드 완성,
-실배포(TestPyPI/Docker Hub), 발표 준비입니다.
+임계값·규칙셋은 검증 샘플로 계속 튜닝 중입니다.
+
+```bash
+# 바로 실행 — 빌드 없이 배포 이미지로
+docker run --rm -p 8000:8000 ghcr.io/jeonmin0716002-sketch/supply-unchained:latest
+# http://localhost:8000/dashboard
+```
 
 통합 리뷰와 중간점검 결정 사항은 [`docs/week1-review.md`](docs/week1-review.md),
 [`docs/week2-integration.md`](docs/week2-integration.md) 참고.
@@ -248,12 +257,13 @@ SU_OFFLINE_DEMO=1 uv run uvicorn api.main:app
 
 ## CI/CD — 자동 테스트와 공급망 게이트
 
-GitHub Actions 워크플로우 2종이 모든 push/PR 에서 자동으로 돕니다.
+GitHub Actions 워크플로우 3종이 자동으로 돕니다.
 
 | 워크플로우 | 하는 일 |
 |---|---|
-| `ci.yml` | ruff 린트 + pytest 전체 실행 |
+| `ci.yml` | ruff 린트 + bandit 자체 스캔 + pytest 전체 실행 (모든 push/PR) |
 | `supply-chain-scan.yml` | 오프라인 데모 모드로 API를 띄우고, 악성 샘플 requirements 는 반드시 차단(exit 1)되고 정상 샘플은 반드시 통과(exit 0)하는지 검증 — "게이트가 살아있는가" 자체를 매 PR마다 증명 |
+| `docker-publish.yml` | main 푸시·`v*` 태그마다 이미지를 빌드하고, 컨테이너를 띄워 `/health` 와 악성 샘플 차단을 확인한 뒤에만 `ghcr.io` 에 올림. 레포 `GITHUB_TOKEN` 만 써서 장기 자격증명을 CI 에 두지 않음 |
 
 공급망 게이트의 설계 원칙:
 
@@ -334,7 +344,8 @@ Supply-Unchained/
 │
 ├── .github/workflows/
 │   ├── ci.yml                    # 린트 + 테스트 (모든 push/PR)
-│   └── supply-chain-scan.yml     # 공급망 게이트 자동 검증
+│   ├── supply-chain-scan.yml     # 공급망 게이트 자동 검증
+│   └── docker-publish.yml        # 스모크 테스트 후 GHCR 이미지 배포
 │
 ├── api/                    # FastAPI
 │   ├── main.py             #   앱 진입점 (/health, /docs)
@@ -349,6 +360,7 @@ Supply-Unchained/
 │
 ├── engine/                 # 탐지 엔진 (레이어 ①②)
 │   ├── cve_matcher.py      #   OSV.dev 연동
+│   ├── cvss.py             #   CVSS v3.x base score 계산
 │   ├── static_analyzer.py  #   트리 순회 + AST
 │   ├── rules/              #   .pth · install hook · 위험 호출 · 난독화
 │   └── verdict.py          #   커스텀 룰 CWE 카탈로그
@@ -361,7 +373,7 @@ Supply-Unchained/
 │
 ├── cli/su_scan.py          # CLI (명시 호출 진입점 · pip 래퍼용 guard)
 ├── tools/                  # 셸 래퍼 (pip install 가로채기)
-├── dashboard/index.html    # SBOM 시각화 (초기 버전)
+├── dashboard/index.html    # 스캔·일괄 스캔·CycloneDX SBOM 내보내기
 │
 ├── samples/                # 악성 패턴 샘플 (전부 무해한 픽스처)
 │   ├── sample1_install_hook/     # 설치 훅 + 셸 명령

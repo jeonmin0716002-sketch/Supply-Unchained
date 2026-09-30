@@ -88,22 +88,18 @@ dependency-confusion(내부 패키지명 흉내) 등이 대부분. 잡아낸 6.5
 
 ## API 연동
 
-`scorer.score_package(req)`가 `api/routers/scan.py`의 `_mock_risk_layer`를 대체함.
-반환 타입은 계약과 동일한 `(RiskSignals, int)`. 라우터에서 `await`로 호출:
-
-```python
-from scoring.scorer import score_package
-signals, risk_score = await score_package(req)
-```
+`api/routers/scan.py` 가 `scorer.score_package` 를 레이어 ③으로 호출합니다. 반환 타입은
+계약과 같은 `(RiskSignals, int)` 이고, 라우터가 만든 `common.pypi.PackageContext` 를 함께
+넘겨 PyPI 조회를 정적분석 레이어와 한 번만 하도록 공유합니다.
 
 ## 실행 / 테스트
 
 ```bash
-# 의존성 (아직 프로젝트 pyproject.toml 없음 — 팀 세팅되면 uv add로 등록 필요)
-uv add httpx
+# 레포 루트에서
+uv run pytest tests/test_scoring.py   # 오프라인 단위 테스트
+uv run python -m scoring.demo requests 2.31.0   # 실제 PyPI 메타데이터로 점수 확인
 
-# API 데모 (레포 루트에서)
-uvicorn api.main:app --reload
+uv run uvicorn api.main:app --reload
 # http://localhost:8000/docs 에서 requests / reqeusts 등으로 테스트
 ```
 
