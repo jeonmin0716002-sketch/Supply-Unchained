@@ -1,0 +1,84 @@
+# 컨테이너 배포 — main 푸시와 v* 태그마다 이미지를 빌드해 GitHub Container Registry 에 올린다.
+#   docker pull ghcr.io/jeonmin0716002-sketch/supply-unchained:latest
+#
+# Docker Hub 대신 GHCR 인 이유: 레포의 GITHUB_TOKEN 만으로 푸시되므로 개인 계정 비밀번호나
+# 장기 토큰을 시크릿에 넣어둘 필요가 없다. 공급망 도구가 CI 에 장기 자격증명을 쌓아두는 것
+# 자체가 공격 표면이다.
+#
+# 올리기 전에 한 번 띄워서 /health 와 실제 스캔 한 건(오프라인 데모)을 확인한다 — 빌드만 되고
+# 기동이 안 되는 이미지를 latest 로 내보내지 않기 위해서다.
+#
+# 액션은 커밋 SHA 로 고정한다 (ci.yml 과 같은 이유). 옆의 주석이 사람이 읽는 버전 표시다.
+name: Docker Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/supply-unchained
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Build (local, for smoke test)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: su-smoke:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          docker run -d --name su -p 8000:8000 -e SU_OFFLINE_DEMO=1 su-smoke:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8000/health && break
+            sleep 1
+          done
+          verdict=$(curl -fsS -X POST http://localhost:8000/api/v1/scan \
+            -H 'Content-Type: application/json' \
+            -d '{"ecosystem":"pip","name":"reqeusts","version":"1.0.0"}' | jq -r .verdict)
+          echo "verdict=$verdict"
+          test "$verdict" = "block"
+          docker rm -f su
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.title=supply-unchained
+            org.opencontainers.image.description=Pre-install supply chain security scanner for pip
+            org.opencontainers.image.licenses=MIT
+
+      - name: Push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
