@@ -38,6 +38,18 @@ def test_typosquat_legit_variant_stays_below_floor():
         assert features.typosquat_score(name) < features.TYPOSQUAT_MIN_RATIO
 
 
+def test_typosquat_flags_mcp_server_lookalike():
+    # 에이전트 설정에 복사해 넣는 MCP 서버 이름 — 오타 하나로 가짜 서버가 실행된다
+    assert features.typosquat_score("mcp-server-fecth") >= HIGH_TYPOSQUAT
+    assert features.typosquat_score("mcp-server-fetch") == 0.0
+
+
+def test_short_names_not_dragged_up_by_mcp_entries():
+    # SDK 본체 "mcp" 를 목록에서 뺀 이유 — 세 글자 기준이면 정상 패키지가 튄다
+    for name in ("mcap", "mcpi"):
+        assert features.typosquat_score(name) < features.TYPOSQUAT_MIN_RATIO
+
+
 # ── is_new_package (proxy for is_new_account) ─────────────────────
 def test_new_package_recent_is_true():
     assert features.is_new_package([NOW - timedelta(days=5)], now=NOW) is True

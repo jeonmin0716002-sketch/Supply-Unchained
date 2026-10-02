@@ -18,6 +18,7 @@
 | `sample2_obfuscated/loader.py` | base64 페이로드 → `exec` | `custom-obfuscated-payload` (CWE-506, high) | ✅ |
 | `sample3_pth_autoexec/install.pth` | `.pth` 시작 시 자동 실행 | `custom-pth` (CWE-94, high) | ✅ |
 | `sample4_pickle/cache.py` | 신뢰할 수 없는 데이터 역직렬화 | `custom-dangerous-call` (CWE-502, medium) | ❌ |
+| `sample5_mcp_typosquat/` | 공식 MCP 서버 `mcp-server-fetch` 를 사칭한 `mcp-server-fecth` — 겉은 정상 fetch 서버, "telemetry" 모듈에 숨긴 payload + `.pth` 상주 | `custom-pth` (CWE-94, high) · `custom-obfuscated-payload` (CWE-506, high) | ✅ |
 
 `sample4`만 차단되지 않는 게 **의도**입니다. `pickle.loads()`는 정상 코드에도
 흔해서 그 자체로는 악의의 증거가 아닙니다. high는 공급망 공격에 특유한 신호
@@ -26,3 +27,10 @@
 
 `sample3_install.pth`가 핵심 차별점입니다 — `pip-audit`·`safety`는 물론 Bandit도
 `.pth` 파일은 보지 않습니다. (Python 소스가 아니라서 파서 대상 자체가 아님)
+
+`sample5`는 AI 에이전트 확장 도구 공격을 재현합니다. 사용자는 MCP 설정 스니펫을
+복사해 넣다가 오타 한 글자로 가짜 서버를 실행하게 되고, 에이전트가 가진 API 키를
+노리는 payload가 import 시점에 돕니다(실제 사례: 2025-09 npm `postmark-mcp` 백도어).
+이 샘플은 PyPI 배포형 MCP 서버를 가정하며, payload 자리에는 `print` 만 있습니다.
+`SU_OFFLINE_DEMO` 모드에서 `mcp-server-fecth` 를 스캔하면 이 샘플의 엔진 결과와
+동일한 판정이 나옵니다(`tests/test_api.py` 가 일치를 검증).

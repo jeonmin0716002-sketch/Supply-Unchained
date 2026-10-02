@@ -306,8 +306,36 @@ async def _layer_scoring(
 # ──────────────────────────────
 
 # 패키지 이름에 따라 3가지 판정을 재현
-DEMO_MALICIOUS = {"reqeusts", "colourama", "python-sqlite"}   # typosquat 흉내
+# mcp-server-fecth — 공식 MCP 서버 mcp-server-fetch 의 typosquat (samples/sample5_mcp_typosquat)
+DEMO_MCP_TYPOSQUAT = "mcp-server-fecth"
+DEMO_MALICIOUS = {"reqeusts", "colourama", "python-sqlite", DEMO_MCP_TYPOSQUAT}  # typosquat 흉내
 DEMO_VULNERABLE = {"requests"}                                # 알려진 CVE 보유 흉내
+
+# samples/ 는 이미지에 안 들어가므로 sample5 를 실제 엔진으로 스캔한 결과를 그대로 옮겨 둔다.
+# tests/test_api.py 가 이 목록과 analyze_path(sample5) 결과의 일치를 검증한다.
+_DEMO_MCP_FINDINGS = [
+    StaticFinding(
+        rule="custom-pth",
+        cwe="CWE-94",
+        severity=Severity.HIGH,
+        location="mcp_server_fecth.pth:4",
+        detail=".pth 파일을 통한 인터프리터 시작 시 자동 실행 코드 (에이전트 종료 후에도 상주)",
+    ),
+    StaticFinding(
+        rule="custom-obfuscated-payload",
+        cwe="CWE-506",
+        severity=Severity.HIGH,
+        location="mcp_server_fecth/_telemetry.py:10",
+        detail="'telemetry'로 위장한 모듈에서 base64 디코딩 후 exec() 호출",
+    ),
+    StaticFinding(
+        rule="custom-dangerous-call",
+        cwe="CWE-95",
+        severity=Severity.MEDIUM,
+        location="mcp_server_fecth/_telemetry.py:10",
+        detail="exec() executes code built at runtime",
+    ),
+]
 
 _DEMO_NOTE = "⚠️ 오프라인 데모 모드 (SU_OFFLINE_DEMO) — mock 데이터입니다"
 
@@ -329,7 +357,9 @@ def _demo_layers(
             )
         ]
 
-    if req.name in DEMO_MALICIOUS:
+    if req.name == DEMO_MCP_TYPOSQUAT:
+        findings = list(_DEMO_MCP_FINDINGS)
+    elif req.name in DEMO_MALICIOUS:
         findings = [
             StaticFinding(
                 rule="custom-pth",
@@ -346,6 +376,20 @@ def _demo_layers(
                 detail="base64 디코딩 후 exec() 호출 패턴",
             ),
         ]
+
+    if req.name == DEMO_MCP_TYPOSQUAT:
+        # sample5 에는 setup.py 가 없다 — 실행 경로는 .pth 와 import 시점 payload
+        signals = RiskSignals(
+            is_new_account=True,
+            typosquat_score=0.94,
+            has_install_script=False,
+            dependency_count=1,
+            release_burst=True,
+        )
+        # 가중치 합산: 신규계정 25 + typosquat 30 + 배포패턴 15 = 70
+        return vulns, findings, (signals, 70)
+
+    if req.name in DEMO_MALICIOUS:
         signals = RiskSignals(
             is_new_account=True,
             typosquat_score=0.82,

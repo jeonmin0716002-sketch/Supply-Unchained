@@ -229,4 +229,11 @@ POPULAR_PACKAGES: tuple[str, ...] = (
     "xlsxwriter",
     "tabulate",
     "coloredlogs",
+    # AI 에이전트 생태계 — 공식 MCP 레퍼런스 서버 등은 에이전트 설정 파일에
+    # 이름을 복사해 넣는 방식이라 오타 typosquat 의 표적이 되기 쉽다.
+    # SDK 본체 "mcp" 는 뺐다 — 세 글자라 mcap·mcpi 같은 정상 패키지가 0.86 으로 튄다
+    "fastmcp",
+    "mcp-server-fetch",
+    "mcp-server-git",
+    "mcp-server-time",
 )

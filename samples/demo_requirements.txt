@@ -2,3 +2,4 @@
 # (reqeusts 는 실존했던 typosquat 악성 패키지 이름 — 데모 mock 이 block 을 낸다)
 requests==2.31.0
 reqeusts==1.0.0
+mcp-server-fecth==0.6.3

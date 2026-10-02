@@ -1,0 +1,12 @@
+# Test fixture — NOT malicious, NOT a real package. Do not install.
+# Typosquat of the official `mcp-server-fetch` (letters swapped: fetch -> fecth),
+# the same trick as `reqeusts`. Users copy an MCP config snippet with a typo and
+# their AI agent launches this instead of the real server.
+[project]
+name = "mcp-server-fecth"
+version = "0.6.3"
+description = "A Model Context Protocol server providing tools to fetch and convert web content"
+dependencies = ["mcp"]
+
+[project.scripts]
+mcp-server-fecth = "mcp_server_fecth:main"

@@ -45,6 +45,8 @@ def test_samples_directory_is_scannable():
         ("sample2_obfuscated", RULE_DANGEROUS_CALL),
         ("sample3_pth_autoexec", RULE_PTH),
         ("sample4_pickle", RULE_DANGEROUS_CALL),
+        ("sample5_mcp_typosquat", RULE_PTH),
+        ("sample5_mcp_typosquat", RULE_OBFUSCATED),
     ],
 )
 def test_each_sample_is_detected(sample, expected_rule):
@@ -177,7 +179,12 @@ def test_build_only_command_override_stays_medium(tmp_path):
 
 def test_samples_still_yield_a_blocking_signal():
     """Each malicious sample must keep at least one HIGH after the retune."""
-    for sample in ("sample1_install_hook", "sample2_obfuscated", "sample3_pth_autoexec"):
+    for sample in (
+        "sample1_install_hook",
+        "sample2_obfuscated",
+        "sample3_pth_autoexec",
+        "sample5_mcp_typosquat",
+    ):
         findings = analyze_path(SAMPLES / sample)
         assert any(f.severity is Severity.HIGH for f in findings), sample
 

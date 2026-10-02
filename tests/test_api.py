@@ -201,6 +201,24 @@ def test_offline_demo_needs_no_network(client, monkeypatch):
     assert body["scan_id"] >= 1  # 데모 결과도 이력에 남아 대시보드가 동작한다
 
 
+def test_offline_demo_mcp_typosquat_mirrors_real_engine(client, monkeypatch):
+    """가짜 MCP 서버 데모 — mock 판정이 sample5 를 실제 엔진으로 스캔한 결과와 같아야 한다."""
+    from pathlib import Path
+
+    from engine.static_analyzer import analyze_path
+
+    monkeypatch.setattr(scan, "OFFLINE_DEMO", True)
+    body = client.post(
+        "/api/v1/scan", json={"name": scan.DEMO_MCP_TYPOSQUAT, "version": "0.6.3"}
+    ).json()
+    assert body["verdict"] == "block"
+
+    sample = Path(__file__).resolve().parents[1] / "samples" / "sample5_mcp_typosquat"
+    real = {(f.rule, f.cwe, f.severity.value, f.location) for f in analyze_path(sample)}
+    demo = {(f["rule"], f["cwe"], f["severity"], f["location"]) for f in body["static_findings"]}
+    assert demo == real
+
+
 # ──────────────────────────────
 # 이력 / 영속성
 # ──────────────────────────────
