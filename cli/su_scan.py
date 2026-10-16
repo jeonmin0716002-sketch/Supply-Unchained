@@ -23,6 +23,7 @@ pip 앞단에서 스캔을 태우는 두 가지 진입점 중 "명시 호출" �
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import subprocess
@@ -381,6 +382,10 @@ def watch(
     from api.routers.scan import run_scan
     from api.storage import ScanStore
     from watcher.runner import run_cycle
+
+    # bandit 은 패키지 소스의 "# nosec" 주석 같은 걸 만날 때마다 경고를 로깅하는데, 핸들러가
+    # 없으면 stderr 로 그대로 나와 주기 요약을 덮는다. 수십 개 패키지를 도는 감시에선 소음이다.
+    logging.getLogger("bandit").setLevel(logging.ERROR)
 
     async def _loop() -> None:
         store = ScanStore()

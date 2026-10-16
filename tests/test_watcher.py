@@ -54,10 +54,11 @@ class _Result:
         return dict(self._record)
 
 
-def _record(name, version, verdict="safe", score=5, scan_id=1):
+def _record(name, version, verdict="safe", score=5, scan_id=1, typo=0.1):
     return {
         "scan_id": scan_id, "name": name, "version": version, "verdict": verdict,
         "risk_score": score, "verdict_reasons": ["test"],
+        "risk_signals": {"is_new_account": True, "typosquat_score": typo},
     }
 
 
@@ -86,8 +87,8 @@ class _Fake:
         self.scanned.append(spec)
         if spec in self.fail:
             raise RuntimeError("network down")
-        verdict, score = self.verdicts.get(req.name, ("safe", 5))
-        return _Result(_record(req.name, req.version, verdict, score, len(self.scanned)))
+        verdict, score, typo = self.verdicts.get(req.name, ("safe", 5, 0.1))
+        return _Result(_record(req.name, req.version, verdict, score, len(self.scanned), typo))
 
 
 @pytest.fixture()
@@ -103,16 +104,22 @@ async def _cycle(fake, store, **kw):
     )
 
 
-def test_is_suspicious_ignores_cve_only_warn():
+def test_is_suspicious_keeps_block_and_lookalike_names():
     assert is_suspicious(_record("x", "1", "block", 10))
-    assert is_suspicious(_record("x", "1", "warn", 45))       # 메타데이터 위험
-    assert not is_suspicious(_record("x", "1", "warn", 20))   # 알려진 CVE 만 있는 정상 패키지
+    assert is_suspicious(_record("reqeusts", "1", "warn", 55, typo=0.88))
+
+
+def test_is_suspicious_ignores_cve_only_and_new_package_baseline():
+    # 알려진 CVE 만 있는 정상 패키지
+    assert not is_suspicious(_record("x", "1", "warn", 20))
+    # 실측 오탐 패턴 — 신규 계정 25 + 배포 버스트 15 = 40, 이름은 평범 (2026-10-16 PyPI 60건)
+    assert not is_suspicious(_record("sh-agent", "0.2.0", "warn", 40, typo=0.53))
 
 
 async def test_cycle_scans_new_releases_and_queues_only_suspicious(store):
     fake = _Fake(
         [("reqeusts", None), ("pyannote-metrics", "4.2.0"), ("oldlib", "2.0")],
-        verdicts={"reqeusts": ("block", 90), "oldlib": ("warn", 20)},
+        verdicts={"reqeusts": ("block", 90, 0.88), "oldlib": ("warn", 20, 0.1)},
     )
     report = await _cycle(fake, store)
 
@@ -187,7 +194,7 @@ def _seed(client, *records):
 
 
 def test_queue_list_filters_by_status_and_patch_keeps_note(client):
-    _seed(client, _record("evil", "1.0", "block", 90, 1), _record("meh", "2.0", "warn", 45, 2))
+    _seed(client, _record("evil", "1.0", "block", 90, 1), _record("meh", "2.0", "warn", 55, 2))
     rows = client.get("/api/v1/watch/queue", params={"status": "new"}).json()
     assert [r["name"] for r in rows] == ["meh", "evil"]  # 최신 우선
 

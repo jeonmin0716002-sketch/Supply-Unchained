@@ -4,9 +4,17 @@
 실행하지 않는다** — 아카이브를 받아 안전 추출 후 정적분석만 한다(common/pypi.py).
 신뢰할 수 없는 업로드를 하루 수천 건 다루는 도구라 이 원칙이 가장 중요하다.
 
-큐에 넣는 기준(``is_suspicious``)이 판정(verdict)과 다른 이유: WARN 의 대부분은
-"정상 패키지의 구버전에 알려진 CVE 가 있다"인데, 감시기의 목적은 악성 패키지 헌팅이라
-그건 노이즈다. 그래서 BLOCK 이거나 메타데이터 위험도가 주의 임계(40) 이상인 것만 올린다.
+큐에 넣는 기준(``is_suspicious``)이 판정(verdict)과 다른 이유가 둘 있다.
+
+* WARN 의 대부분은 "정상 패키지의 구버전에 알려진 CVE 가 있다"인데, 감시기의 목적은
+  악성 패키지 헌팅이라 그건 노이즈다.
+* 메타데이터 위험도(risk_score)도 쓰지 않는다. 감시 대상이 전부 갓 올라온 패키지라
+  "신규 계정"(+25) 신호가 항상 켜져 있고, 배포 버스트(+15)나 설치 스크립트(+20) 하나만
+  더해져도 주의 임계 40 에 닿는다. 실측(2026-10-16, PyPI 60건): 위험도만으로 걸린 6건이
+  전부 이 조합이었고 typosquat 유사도는 0.38~0.60 — 평범한 새 패키지였다.
+
+그래서 BLOCK 이거나, 새 패키지에서도 변별력이 남는 메타데이터 신호인 typosquat 유사도가
+높은(``TYPOSQUAT_MIN_RATIO`` 이상) 것만 올린다.
 """
 
 from __future__ import annotations
@@ -21,10 +29,8 @@ import httpx
 from api.schemas import ScanRequest
 from api.storage import ScanStore
 from common.pypi import PyPIError, fetch_project
+from scoring.features import TYPOSQUAT_MIN_RATIO
 from watcher.feed import fetch_feeds
-
-#: _decide() 의 warn 임계와 같은 값 — 메타데이터만으로 "주의"가 뜨는 지점.
-SUSPICIOUS_RISK_SCORE = 40
 
 Item = tuple[str, str | None]
 FetchFn = Callable[[httpx.AsyncClient], Awaitable[tuple[list[Item], list[str]]]]
@@ -43,7 +49,10 @@ class CycleReport:
 
 
 def is_suspicious(record: dict) -> bool:
-    return record["verdict"] == "block" or record["risk_score"] >= SUSPICIOUS_RISK_SCORE
+    if record["verdict"] == "block":
+        return True
+    signals = record.get("risk_signals") or {}
+    return (signals.get("typosquat_score") or 0.0) >= TYPOSQUAT_MIN_RATIO
 
 
 async def resolve_latest(name: str, http: httpx.AsyncClient) -> str:
