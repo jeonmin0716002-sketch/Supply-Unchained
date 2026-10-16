@@ -35,6 +35,7 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 | CI 2종 (테스트 + 공급망 스캔 게이트) | 동작 |
 | 컨테이너 이미지 배포 (GHCR, `docker-publish.yml`) | 동작 |
 | PyPI 감시기 — 신규 업로드 자동 스캔 + 검토 큐 (`watcher/`, `su_scan watch`) | 동작 |
+| 실측 평가 — 실제 악성 300개 탐지율 73.3% · 정상 상위 300개 오탐률 0.7% (`tools/eval_*.py`) | 동작 |
 
 임계값·규칙셋은 검증 샘플로 계속 튜닝 중입니다.
 
@@ -282,6 +283,44 @@ GitHub Actions 워크플로우 3종이 자동으로 돕니다.
 # 로컬에서 게이트와 동일한 검사 실행
 uv run python -m cli.su_scan check-file requirements.txt   # block 있으면 exit 1
 ```
+
+---
+
+## 탐지 성능 (실측)
+
+실제 악성 패키지와 정상 인기 패키지로 정적분석 엔진을 측정했습니다. 두 스크립트 모두
+패키지를 **설치·실행하지 않고** 정적분석만 하며, 같은 인자로 다시 돌리면 같은 샘플을 씁니다.
+
+| 지표 | 데이터 | 결과 |
+|---|---|---|
+| 탐지율 (차단) | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중 무작위 300개 (패키지당 1버전, seed 42) | **73.3%** (220/300) |
+| 오탐률 (차단) | PyPI 다운로드 상위 300개 최신 버전 ([top-pypi-packages](https://hugovk.github.io/top-pypi-packages/)) | **0.7%** (2/289, 11개는 다운로드 오류) |
+
+```bash
+uv run python tools/eval_malware_dataset.py --n 300 --seed 42   # 탐지율
+uv run python tools/eval_benign_top.py --n 300                  # 오탐률
+```
+
+같은 300개로 처음 측정했을 때 차단율은 **13%** 였습니다. 놓친 샘플의 78% 가 훅도
+난독화도 없이 `setup.py` 최상단에서 바로 네트워크 전송·숨김 PowerShell 을 실행했는데,
+당시 규칙은 그 위치를 보지 않았습니다. 그래서 "설치·import 시점에 실제로 실행되는 코드" 를
+범위로 잡는 규칙(`custom-install-time-exec`)과 토큰이 박힌 웹훅 규칙(`custom-exfil-endpoint`)을
+더했고, 정상 300개에서 나온 오탐(통신하지 않는 생성자, import 되지 않는 보조 스크립트 등)을
+걷어내 위 수치가 됐습니다. 근거는 각 규칙 docstring 과 `tests/test_engine.py` 에 있습니다.
+
+**알려진 한계 — 놓치는 27% (80개)**
+
+| 유형 | 수 | 이유 |
+|---|--:|---|
+| 부르는 곳이 정적으로 보이지 않는 네트워크 코드 | 29 | 사용자가 함수를 직접 호출해야 도는 페이로드는 설치·import 시점 범위 밖 |
+| 난독화·동적 실행 (네트워크가 겉으로 안 보임) | 27 | 디코딩→exec 체인이 아닌 형태(marshal·zlib 단독, 다단계 문자열 조립 등) |
+| 알려진 수상 토큰 없는 프로세스 실행 | 16 | 평범해 보이는 명령으로 2단계 페이로드를 받는 경우 |
+| 코드 없음·PoC | 8 | 메타데이터만 있거나 무해한 테스트 패키지 |
+
+측정 중 발견한 것 하나: Windows Defender 는 실제 악성 파일의 **읽기 자체를 막습니다**
+(OSError 22). 예전 엔진은 읽지 못한 파일을 조용히 건너뛰어 "검사했고 깨끗했다"로
+보고했습니다. 지금은 스캔 응답의 `layer_errors` 에 "파일을 읽지 못해 검사하지 못함 —
+백신이 차단했을 수 있음" 으로 남기고, 평가 스크립트는 디스크에 풀지 않고 메모리에서 분석합니다.
 
 ---
 
