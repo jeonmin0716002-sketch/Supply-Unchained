@@ -76,6 +76,41 @@ def test_pth_path_entries_are_not_flagged(tmp_path):
     assert analyze_path(tmp_path) == []
 
 
+def _wheel(root: Path) -> Path:
+    info = root / "demo-1.0.dist-info"
+    info.mkdir(parents=True)
+    (info / "WHEEL").write_text("Wheel-Version: 1.0\n", encoding="utf-8")
+    return root
+
+
+def _pth_severity(root: Path, relpath: str) -> Severity:
+    target = root / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("import os\n", encoding="utf-8")
+    [finding] = [f for f in analyze_path(root) if f.rule == RULE_PTH]
+    return finding.severity
+
+
+def test_pth_nested_inside_wheel_is_not_blocking(tmp_path):
+    """실측 오탐 — litert-lm-nightly 휠이 번들한 가상환경 안의 .pth. site.py 가 안 본다."""
+    rel = "litert_lm_cli/_litert-lm.venv/lib/python3.13/site-packages/bazel.pth"
+    assert _pth_severity(_wheel(tmp_path), rel) is Severity.MEDIUM
+
+
+@pytest.mark.parametrize(
+    "rel", ["evil.pth", "demo-1.0.data/purelib/evil.pth", "demo-1.0.data/platlib/evil.pth"]
+)
+def test_pth_at_wheel_install_root_stays_high(tmp_path, rel):
+    """휠 루트와 .data/purelib|platlib 는 site-packages 최상위로 설치된다."""
+    assert _pth_severity(_wheel(tmp_path), rel) is Severity.HIGH
+
+
+def test_pth_nested_inside_sdist_stays_high(tmp_path):
+    """sdist 는 data_files 로 어느 경로의 파일이든 site-packages 최상위로 옮길 수 있다."""
+    (tmp_path / "PKG-INFO").write_text("Name: demo\n", encoding="utf-8")
+    assert _pth_severity(tmp_path, "src/data/evil.pth") is Severity.HIGH
+
+
 def test_build_ext_override_is_not_flagged(tmp_path):
     """Compiled packages legitimately override build_ext."""
     (tmp_path / "setup.py").write_text(

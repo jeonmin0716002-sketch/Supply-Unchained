@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterable
+from pathlib import Path, PurePosixPath
 
 from api.schemas import Severity, StaticFinding
 from engine.rules.base import FileContext, make_finding
@@ -76,10 +77,51 @@ def _hook_class_defs(tree: ast.Module, value: ast.expr) -> ast.ClassDef | None:
     return None
 
 
+#: 휠 안에서 이 디렉터리 아래 파일은 site-packages **최상위**로 설치된다 (PEP 427
+#: ``<dist>.data/purelib|platlib/``). 휠 루트에 있는 파일과 함께, site.py 가 .pth 를
+#: 처리하는 유일한 위치다.
+_WHEEL_SITE_ROOT_DIRS = {"purelib", "platlib"}
+
+
+def _wheel_root(ctx: FileContext) -> Path | None:
+    """이 파일이 압축 해제된 **휠** 안에 있으면 휠 루트를, 아니면 None.
+
+    휠은 루트에 ``*.dist-info/WHEEL`` 이 있다. sdist 에는 없다(PKG-INFO·egg-info 뿐).
+    """
+    depth = len(PurePosixPath(ctx.relpath).parts)
+    root = ctx.path.parents[depth - 1]
+    if any((d / "WHEEL").is_file() for d in root.glob("*.dist-info")):
+        return root
+    return None
+
+
+def _installs_at_site_packages_root(relpath: str) -> bool:
+    parts = PurePosixPath(relpath).parts
+    if len(parts) == 1:
+        return True
+    return (
+        len(parts) == 3
+        and parts[0].endswith(".data")
+        and parts[1] in _WHEEL_SITE_ROOT_DIRS
+    )
+
+
 def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
-    """Flag ``.pth`` lines that ``site.py`` will execute at every startup."""
+    """Flag ``.pth`` lines that ``site.py`` will execute at every startup.
+
+    site.py 는 site-packages **최상위**의 .pth 만 처리한다. 휠은 압축 구조가 곧 설치
+    구조라, 하위 디렉터리에 묻힌 .pth 는 설치해도 절대 실행되지 않는다 — 실측 오탐:
+    litert-lm-nightly 휠이 번들한 가상환경 안의 ``.../site-packages/bazel.pth``.
+    그런 경우만 MEDIUM 으로 낮춘다(보고는 하되 차단 근거는 아님).
+
+    sdist 는 낮추지 않는다. ``setup(data_files=[("", ["src/x/evil.pth"])])`` 처럼 빌드
+    설정이 아카이브 안 어느 경로의 파일이든 site-packages 최상위로 옮길 수 있어서,
+    위치만으로는 실행 여부를 알 수 없다.
+    """
     if ctx.suffix != ".pth":
         return
+
+    reachable = _wheel_root(ctx) is None or _installs_at_site_packages_root(ctx.relpath)
 
     for lineno, raw in enumerate(ctx.text.splitlines(), start=1):
         line = raw.strip()
@@ -88,16 +130,25 @@ def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
         if not line.startswith(("import ", "import\t")):
             continue
 
+        if reachable:
+            severity = Severity.HIGH
+            detail = (
+                "'.pth' file executes code at interpreter startup "
+                f"(site.py runs this line in every Python process): {line[:120]}"
+            )
+        else:
+            severity = Severity.MEDIUM
+            detail = (
+                "'.pth' with an import line, but nested inside the wheel — it is not "
+                f"installed at the site-packages root, so site.py never runs it: {line[:120]}"
+            )
         yield make_finding(
             rule=RULE_PTH,
             cwe="CWE-94",
-            severity=Severity.HIGH,
+            severity=severity,
             ctx=ctx,
             line=lineno,
-            detail=(
-                "'.pth' file executes code at interpreter startup "
-                f"(site.py runs this line in every Python process): {line[:120]}"
-            ),
+            detail=detail,
         )
 
 

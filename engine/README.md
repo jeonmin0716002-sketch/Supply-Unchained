@@ -137,6 +137,7 @@ AstRule  = (ctx, tree) -> findings   # 파싱 성공한 Python 모듈만
 | 룰 ID | 탐지 대상 | CWE | 심각도 |
 |---|---|---|:---:|
 | `custom-pth` | `.pth` 파일의 인터프리터 시작 시 자동 실행 | CWE-94 | **high** |
+| `custom-pth` | 위와 같은 줄이지만 **휠 하위 디렉터리**에 묻힌 `.pth` (설치돼도 실행 안 됨) | CWE-94 | medium |
 | `custom-install-hook` | `cmdclass`로 `install`/`develop` 가로채기 | CWE-94 | **high** |
 | `custom-install-hook` | `cmdclass`로 `sdist`/`bdist_wheel` 등 빌드 명령 | CWE-94 | medium |
 | `custom-obfuscated-payload` | 디코딩 결과 → 실행 싱크 | CWE-506 | **high** |
@@ -201,6 +202,7 @@ Bandit을 아무리 잘 붙여도 이 경로는 안 잡힙니다. 그래서 커�
 | 안 잡는 것 | 이유 |
 |---|---|
 | `.pth`의 일반 경로 엔트리 | `site.py`의 실제 트리거는 `import ` / `import\t`로 **시작**하는 줄뿐 |
+| 휠 하위 디렉터리의 `.pth` (high 로는) | `site.py`는 site-packages **최상위** `.pth`만 처리. 휠은 압축 구조가 곧 설치 구조라 루트·`<dist>.data/purelib/`·`platlib/` 밖은 실행되지 않음 (실측 오탐: litert-lm-nightly 가 번들한 가상환경 안 `bazel.pth`). sdist 는 `data_files` 로 어느 경로든 옮길 수 있어 그대로 high |
 | `cmdclass={'build_ext': ...}` | 컴파일 확장 있는 정상 패키지가 광범위하게 씀 |
 | `subprocess.run([...])` (shell 없음) | 리스트 인자 + shell=False는 셸 인젝션 경로가 아님 |
 | 단독 `base64.b64decode(...)` | 아이콘·인증서 디코딩 등 정상 용도가 대부분 |
