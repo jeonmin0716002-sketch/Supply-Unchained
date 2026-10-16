@@ -17,8 +17,9 @@ Two hooks are covered here:
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Iterable
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 from api.schemas import Severity, StaticFinding
 from engine.rules.base import FileContext, make_finding
@@ -115,16 +116,15 @@ def _hook_class_defs(tree: ast.Module, value: ast.expr) -> ast.ClassDef | None:
 _WHEEL_SITE_ROOT_DIRS = {"purelib", "platlib"}
 
 
-def _wheel_root(ctx: FileContext) -> Path | None:
-    """이 파일이 압축 해제된 **휠** 안에 있으면 휠 루트를, 아니면 None.
+_WHEEL_MARKER = re.compile(r"[^/]+\.dist-info/WHEEL")
+
+
+def _in_wheel(ctx: FileContext) -> bool:
+    """분석 루트가 압축 해제된 **휠**인가.
 
     휠은 루트에 ``*.dist-info/WHEEL`` 이 있다. sdist 에는 없다(PKG-INFO·egg-info 뿐).
     """
-    depth = len(PurePosixPath(ctx.relpath).parts)
-    root = ctx.path.parents[depth - 1]
-    if any((d / "WHEEL").is_file() for d in root.glob("*.dist-info")):
-        return root
-    return None
+    return ctx.tree is not None and any(_WHEEL_MARKER.fullmatch(f) for f in ctx.tree.files())
 
 
 def _installs_at_site_packages_root(relpath: str) -> bool:
@@ -153,7 +153,7 @@ def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
     if ctx.suffix != ".pth":
         return
 
-    reachable = _wheel_root(ctx) is None or _installs_at_site_packages_root(ctx.relpath)
+    reachable = not _in_wheel(ctx) or _installs_at_site_packages_root(ctx.relpath)
 
     for lineno, raw in enumerate(ctx.text.splitlines(), start=1):
         line = raw.strip()

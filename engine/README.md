@@ -141,6 +141,8 @@ AstRule  = (ctx, tree) -> findings   # 파싱 성공한 Python 모듈만
 | `custom-install-hook` | `cmdclass`로 `install`/`develop` 가로채기 | CWE-94 | **high** |
 | `custom-install-hook` | `cmdclass`로 `sdist`/`bdist_wheel` 등 빌드 명령 | CWE-94 | medium |
 | `custom-obfuscated-payload` | 디코딩 결과 → 실행 싱크 | CWE-506 | **high** |
+| `custom-install-time-exec` | 설치·import 시점에 실행되는 코드(setup.py 최상단·설치 훅·그들이 부르는 함수와 로컬 모듈, 패키지 모듈 최상단) 안의 **네트워크 송수신** 또는 **수상한 명령 실행**(숨김 PowerShell·인코딩 명령·curl/wget·pythonw 등) | CWE-506 | **high** |
+| `custom-exfil-endpoint` | 토큰이 박힌 Discord 웹훅·Telegram 봇 주소 (위치 무관) | CWE-200 | **high** |
 | `custom-obfuscated-payload` | 200자 이상 인코딩 블롭 리터럴 | CWE-506 | medium |
 | `custom-dangerous-call` | `eval`/`exec` | CWE-95 | medium |
 | `custom-dangerous-call` | `os.system`/`os.popen`/`shell=True` | CWE-78 | medium |

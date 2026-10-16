@@ -102,7 +102,7 @@ async def _layer_static(
     req: ScanRequest, ctx: PackageContext, errors: list[str]
 ) -> list[StaticFinding]:
     try:
-        return await analyze_package(req, ctx=ctx)
+        return await analyze_package(req, ctx=ctx, errors=errors)
     except PyPIError as exc:
         # 패키지가 없거나 아카이브를 못 읽은 경우. "검사하지 못했다"는 사실이
         # "검사했고 깨끗했다"로 보이면 안 되므로 layer_errors 로 남긴다.

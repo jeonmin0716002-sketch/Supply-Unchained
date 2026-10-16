@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from pathlib import Path
+from collections.abc import Mapping
+from pathlib import Path, PurePosixPath
 
 from api.schemas import ScanRequest, Severity, StaticFinding
 from common.pypi import PackageContext
 from engine.rules import AST_RULES, FILE_RULES, FileContext
+from engine.rules.base import DiskTree, MemoryTree, SourceTree
 
 #: Files larger than this are skipped — packaged data blobs, not source.
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -60,55 +62,45 @@ class StaticAnalysisError(RuntimeError):
     """Raised when a package could not be analysed at all."""
 
 
-def _iter_files(root: Path):
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel_parts = path.relative_to(root).parts
-        if any(part in SKIP_DIRS for part in rel_parts):
+def _candidates(tree: SourceTree) -> list[str]:
+    out = []
+    for rel in tree.files():
+        parts = PurePosixPath(rel).parts
+        if any(part in SKIP_DIRS for part in parts):
             continue
         # Directory names only -- ``docs.py`` is a shipped module, not a docs folder.
-        if any(part in NOT_EXECUTED_DIRS for part in rel_parts[:-1]):
+        if any(part in NOT_EXECUTED_DIRS for part in parts[:-1]):
             continue
-        if path.suffix.lower() not in TEXT_SUFFIXES:
+        if PurePosixPath(rel).suffix.lower() not in TEXT_SUFFIXES:
             continue
-        try:
-            if path.stat().st_size > MAX_FILE_BYTES:
-                continue
-        except OSError:
+        if not 0 <= tree.size(rel) <= MAX_FILE_BYTES:
             continue
-        yield path
+        out.append(rel)
+    return out
 
 
-def _read_context(path: Path, root: Path) -> FileContext | None:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    relpath = path.relative_to(root).as_posix()
-    return FileContext(path=path, relpath=relpath, text=text)
+def analyze_tree(
+    tree: SourceTree, *, base: Path | None = None, unreadable: list[str] | None = None
+) -> list[StaticFinding]:
+    """Run every custom rule over a package file tree (disk or memory).
 
-
-def analyze_path(root: str | Path) -> list[StaticFinding]:
-    """Run every custom rule over an extracted package tree.
+    읽지 못한 파일은 건너뛰되 ``unreadable`` 에 남긴다 — 실제 악성 파일은 백신이 읽기를
+    막는 경우가 많아서(Windows Defender: OSError 22), 조용히 건너뛰면 "검사하지 못했다"가
+    "검사했고 깨끗했다"로 둔갑한다.
 
     Returns findings ordered most-severe first so the router can take the head
     of the list for its verdict reasons.
     """
-    root = Path(root)
-    if not root.exists():
-        raise StaticAnalysisError(f"path does not exist: {root}")
-    if root.is_file():
-        root, targets = root.parent, [root]
-    else:
-        targets = list(_iter_files(root))
-
     findings: list[StaticFinding] = []
+    root = base or Path(".")
 
-    for path in targets:
-        ctx = _read_context(path, root)
-        if ctx is None:
+    for rel in _candidates(tree):
+        text = tree.read(rel)
+        if text is None:
+            if unreadable is not None:
+                unreadable.append(rel)
             continue
+        ctx = FileContext(path=root / rel, relpath=rel, text=text, tree=tree)
 
         for rule in FILE_RULES:
             findings.extend(rule(ctx))
@@ -116,23 +108,44 @@ def analyze_path(root: str | Path) -> list[StaticFinding]:
         if ctx.suffix != ".py":
             continue
         try:
-            tree = ast.parse(ctx.text, filename=str(path))
-        except SyntaxError:
+            module = ast.parse(ctx.text, filename=rel)
+        except (SyntaxError, ValueError):
             # Not necessarily malicious (Python 2 leftovers are common in old
             # sdists), and an unparseable file is not evidence on its own.
             continue
 
         for ast_rule in AST_RULES:
-            findings.extend(ast_rule(ctx, tree))
+            findings.extend(ast_rule(ctx, module))
 
     findings.sort(key=lambda f: (_SEVERITY_ORDER[f.severity], f.location, f.rule))
     return findings
+
+
+def analyze_path(root: str | Path, *, unreadable: list[str] | None = None) -> list[StaticFinding]:
+    """Run every custom rule over an extracted package tree on disk."""
+    root = Path(root)
+    if not root.exists():
+        raise StaticAnalysisError(f"path does not exist: {root}")
+    if root.is_file():
+        single = root
+        tree = DiskTree(root.parent)
+        tree._files = [single.name]
+        return analyze_tree(tree, base=root.parent, unreadable=unreadable)
+    return analyze_tree(DiskTree(root), base=root, unreadable=unreadable)
+
+
+def analyze_files(
+    files: Mapping[str, str], *, unreadable: list[str] | None = None
+) -> list[StaticFinding]:
+    """메모리에 있는 파일들(relpath → 내용)을 분석한다. 디스크에 쓰지 않는다."""
+    return analyze_tree(MemoryTree(files), unreadable=unreadable)
 
 
 async def analyze_package(
     req: ScanRequest,
     *,
     ctx: PackageContext | None = None,
+    errors: list[str] | None = None,
 ) -> list[StaticFinding]:
     """Engine entry point for layer (2) — replaces the router's ``_mock_static_layer``.
 
@@ -148,10 +161,21 @@ async def analyze_package(
     # analyze_path() 는 트리 전체를 읽고 AST 를 파싱하는 동기 작업이다. 코루틴에서 그대로
     # 부르면 라우터가 asyncio.gather 로 묶어둔 나머지 레이어가 그 시간만큼 통째로 멈추고,
     # 서버의 다른 요청도 같이 멈춘다 (api/routers/scan.py 의 bandit 레이어와 같은 이유).
+    async def _run(root: Path | None) -> list[StaticFinding]:
+        if not root:
+            return []
+        unreadable: list[str] = []
+        findings = await asyncio.to_thread(analyze_path, root, unreadable=unreadable)
+        if unreadable and errors is not None:
+            shown = ", ".join(unreadable[:3]) + (" 외" if len(unreadable) > 3 else "")
+            errors.append(
+                f"static: 파일 {len(unreadable)}개를 읽지 못해 검사하지 못함 — "
+                f"백신이 차단했을 수 있음 ({shown})"
+            )
+        return findings
+
     if ctx is not None:
-        root = await ctx.extracted_path()
-        return await asyncio.to_thread(analyze_path, root) if root else []
+        return await _run(await ctx.extracted_path())
 
     async with PackageContext(req.name, req.version) as own_ctx:
-        root = await own_ctx.extracted_path()
-        return await asyncio.to_thread(analyze_path, root) if root else []
+        return await _run(await own_ctx.extracted_path())

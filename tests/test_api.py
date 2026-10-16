@@ -182,7 +182,7 @@ def test_static_layer_converts_fetch_error(client, monkeypatch):
     async def fake_scoring(req, ctx, errors):
         return SAFE_SIGNALS, 5
 
-    async def boom(req, *, ctx=None):
+    async def boom(req, *, ctx=None, errors=None):
         raise PyPIError("ghost-pkg is not on PyPI")
 
     monkeypatch.setattr(scan, "_layer_cve", fake_cve)

@@ -8,6 +8,7 @@ readable in one place.
 from engine.rules.base import AstRule, FileContext, FileRule, make_finding
 from engine.rules.code_patterns import dangerous_calls, obfuscated_payload
 from engine.rules.install_hooks import pth_autoexec, setup_command_hook
+from engine.rules.install_time import exfil_endpoint, install_time_exec
 
 #: Applied to every readable file, Python or not.
 FILE_RULES: tuple[FileRule, ...] = (pth_autoexec,)
@@ -17,6 +18,8 @@ AST_RULES: tuple[AstRule, ...] = (
     dangerous_calls,
     obfuscated_payload,
     setup_command_hook,
+    install_time_exec,
+    exfil_endpoint,
 )
 
 __all__ = [
