@@ -170,6 +170,13 @@ async def test_max_scans_defers_the_rest(store):
     assert report.scanned == 3  # 미뤄진 것들이 다음 주기에 처리된다
 
 
+async def test_new_projects_are_scanned_before_updates_when_capped(store):
+    # 업데이트 피드가 먼저 와도, 자리가 모자라면 새 프로젝트가 먼저 스캔돼야 한다
+    fake = _Fake([("bigframework", "9.1.0"), ("brand-new-pkg", None)])
+    report = await _cycle(fake, store, max_scans=1)
+    assert fake.scanned == ["brand-new-pkg==1.0.0"] and report.deferred == 1
+
+
 async def test_feed_errors_are_surfaced_not_swallowed(store):
     fake = _Fake([], feed_errors=["https://pypi.org/rss/packages.xml: 503"])
     report = await _cycle(fake, store)

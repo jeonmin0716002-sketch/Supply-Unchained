@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import warnings
 from datetime import datetime
 
 import httpx
@@ -386,6 +387,9 @@ def watch(
     # bandit 은 패키지 소스의 "# nosec" 주석 같은 걸 만날 때마다 경고를 로깅하는데, 핸들러가
     # 없으면 stderr 로 그대로 나와 주기 요약을 덮는다. 수십 개 패키지를 도는 감시에선 소음이다.
     logging.getLogger("bandit").setLevel(logging.ERROR)
+    # 스캔 대상 패키지 소스를 파싱할 때 Python 이 내는 SyntaxWarning(예: "invalid escape
+    # sequence '\ '") 도 같은 소음이다 — 남의 코드 품질 경고라 판정과 무관하다.
+    warnings.filterwarnings("ignore", category=SyntaxWarning)
 
     async def _loop() -> None:
         store = ScanStore()

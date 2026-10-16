@@ -98,7 +98,10 @@ async def run_cycle(
     resolved = await asyncio.gather(
         *(_resolve(n) for n, v in items if v is None and n not in known)
     )
-    candidates = [(n, v) for n, v in items if v is not None] + [r for r in resolved if r]
+    # 새 프로젝트를 먼저 — max_scans 에 걸려 미뤄질 때 새 이름이 뒤로 밀리면 안 된다.
+    # 악성 업로드는 대부분 새 이름(typosquat·dependency confusion)이고, 피드는 최근 항목만
+    # 보여주므로 계속 밀리면 스캔 전에 피드에서 빠져 영영 못 보게 된다.
+    candidates = [r for r in resolved if r] + [(n, v) for n, v in items if v is not None]
 
     requests: list[ScanRequest] = []
     for name, version in dict.fromkeys(candidates):
