@@ -54,12 +54,49 @@ def typosquat_score(name: str) -> float:
     for popular in _POPULAR_NORMALIZED:
         if abs(len(popular) - len(target)) > _MAX_LEN_DELTA:
             continue
-        ratio = SequenceMatcher(None, target, popular).ratio()
+        ratio = _namespaced_ratio(target, popular)
         if ratio > best:
             best = ratio
             if best == 1.0:  # can't do better (shouldn't happen after the guard)
                 break
     return round(best, 2)
+
+
+def _namespaced_ratio(target: str, popular: str) -> float:
+    """이름 유사도. 앞쪽 세그먼트(``mcp-server-``·``django-``)를 공유하면 뒷부분으로 판단한다.
+
+    통째로 비교하면 공유 접두사가 유사도를 부풀린다 — 실측 오탐(2026-10-16 감시 12시간):
+    ``mcp-server-lint``·``-sigma``·``-espn`` 이 공식 ``mcp-server-git``/``-time`` 과 0.8~0.9.
+    같은 네임스페이스 안의 사칭은 뒷부분이 **한 타 차이**(삽입·삭제·치환·인접 교환)인
+    경우다(``mcp-server-fecth``). 그때만 전체 유사도를 쓰고, 아니면 뒷부분끼리의 유사도만 쓴다.
+    """
+    t_parts, p_parts = target.split("-"), popular.split("-")
+    shared = 0
+    while shared < min(len(t_parts), len(p_parts)) and t_parts[shared] == p_parts[shared]:
+        shared += 1
+    if shared == 0:
+        return SequenceMatcher(None, target, popular).ratio()
+    t_rest, p_rest = "-".join(t_parts[shared:]), "-".join(p_parts[shared:])
+    if not t_rest or not p_rest:
+        return 0.0  # 한쪽이 다른 쪽의 확장(requests → requests-toolbelt) — 사칭 아님
+    if _edit_distance(t_rest, p_rest) <= 1:
+        return SequenceMatcher(None, target, popular).ratio()
+    return SequenceMatcher(None, t_rest, p_rest).ratio()
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """인접 교환을 1회로 치는 편집 거리 (optimal string alignment)."""
+    prev2: list[int] = []
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = a[i - 1] != b[j - 1]
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[-1]
 
 
 def is_new_package(release_dates: list[datetime], *, now: datetime | None = None) -> bool:

@@ -187,6 +187,15 @@ class ScanStore:
             rows = conn.execute(sql, (*args, limit)).fetchall()
         return [dict(r) for r in rows]
 
+    def _queued_records(self, name: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT s.response_json FROM watch_queue q JOIN scans s ON s.id = q.scan_id"
+                " WHERE q.name = ?",
+                (name,),
+            ).fetchall()
+        return [json.loads(r["response_json"]) for r in rows]
+
     def _update_queue(
         self, item_id: int, status: str, note: str | None, now: str
     ) -> dict | None:
@@ -237,6 +246,10 @@ class ScanStore:
 
     async def queue(self, status: str | None = None, limit: int = 100) -> list[dict]:
         return await asyncio.to_thread(self._queue, status, limit)
+
+    async def queued_records(self, name: str) -> list[dict]:
+        """이 패키지가 큐에 오른 적이 있으면 그때의 스캔 결과들 (상태 무관)."""
+        return await asyncio.to_thread(self._queued_records, name)
 
     async def update_queue(
         self, item_id: int, status: str, note: str | None, now: str

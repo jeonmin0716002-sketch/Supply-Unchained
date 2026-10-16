@@ -54,11 +54,12 @@ class _Result:
         return dict(self._record)
 
 
-def _record(name, version, verdict="safe", score=5, scan_id=1, typo=0.1):
+def _record(name, version, verdict="safe", score=5, scan_id=1, typo=0.1, new=True, rules=()):
     return {
         "scan_id": scan_id, "name": name, "version": version, "verdict": verdict,
         "risk_score": score, "verdict_reasons": ["test"],
-        "risk_signals": {"is_new_account": True, "typosquat_score": typo},
+        "risk_signals": {"is_new_account": new, "typosquat_score": typo},
+        "static_findings": [{"rule": r, "severity": "high"} for r in rules],
     }
 
 
@@ -87,8 +88,13 @@ class _Fake:
         self.scanned.append(spec)
         if spec in self.fail:
             raise RuntimeError("network down")
-        verdict, score, typo = self.verdicts.get(req.name, ("safe", 5, 0.1))
-        return _Result(_record(req.name, req.version, verdict, score, len(self.scanned), typo))
+        verdict, score, typo, *rules = self.verdicts.get(req.name, ("safe", 5, 0.1))
+        record = _record(req.name, req.version, verdict, score, 0, typo,
+                         rules=tuple(rules[0]) if rules else ())
+        # 진짜 run_scan 처럼 scans 테이블에 남긴다 — 큐 중복 판단이 이 기록을 읽는다
+        record["scan_id"] = await store.insert({**record, "ecosystem": "pip", "scanned_at": "t"})
+        await store.finalize(record["scan_id"], record)
+        return _Result(record)
 
 
 @pytest.fixture()
@@ -114,6 +120,32 @@ def test_is_suspicious_ignores_cve_only_and_new_package_baseline():
     assert not is_suspicious(_record("x", "1", "warn", 20))
     # 실측 오탐 패턴 — 신규 계정 25 + 배포 버스트 15 = 40, 이름은 평범 (2026-10-16 PyPI 60건)
     assert not is_suspicious(_record("sh-agent", "0.2.0", "warn", 40, typo=0.53))
+
+
+def test_lookalike_name_only_counts_for_new_projects():
+    # 실측 — oauth2-lib(2021년부터 55개 릴리스)가 oauthlib 와 0.89 로 걸렸다
+    assert not is_suspicious(_record("oauth2-lib", "3.1.0", "safe", 26, typo=0.89, new=False))
+    assert is_suspicious(_record("oauth2-lib", "3.1.0", "safe", 26, typo=0.89, new=True))
+
+
+async def test_same_package_same_reason_is_not_requeued(store):
+    fake = _Fake([("dagz", "1.0")], verdicts={"dagz": ("block", 0, 0.6, ["custom-pth"])})
+    await _cycle(fake, store)
+    fake.items = [("dagz", "1.1")]
+    report = await _cycle(fake, store)
+    assert report.scanned == 1 and report.repeat == 1 and not report.flagged
+    assert len(await store.queue()) == 1
+
+
+async def test_same_package_new_reason_is_requeued(store):
+    # 정상이던 패키지의 새 버전에 처음으로 난독화가 생김 — 계정 탈취의 전형
+    fake = _Fake([("dagz", "1.0")], verdicts={"dagz": ("block", 0, 0.6, ["custom-pth"])})
+    await _cycle(fake, store)
+    fake.items = [("dagz", "1.1")]
+    fake.verdicts["dagz"] = ("block", 0, 0.6, ["custom-pth", "custom-obfuscated-payload"])
+    report = await _cycle(fake, store)
+    assert report.repeat == 0 and len(report.flagged) == 1
+    assert len(await store.queue()) == 2
 
 
 async def test_cycle_scans_new_releases_and_queues_only_suspicious(store):

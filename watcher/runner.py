@@ -14,7 +14,14 @@
   전부 이 조합이었고 typosquat 유사도는 0.38~0.60 — 평범한 새 패키지였다.
 
 그래서 BLOCK 이거나, 새 패키지에서도 변별력이 남는 메타데이터 신호인 typosquat 유사도가
-높은(``TYPOSQUAT_MIN_RATIO`` 이상) 것만 올린다.
+높은(``TYPOSQUAT_MIN_RATIO`` 이상) 것만 올린다. 이름 유사도는 다시 **새 프로젝트**
+(첫 릴리스가 NEW_PACKAGE_DAYS 이내)일 때만 센다 — 이름 사칭은 갓 만든 이름으로 올라와
+며칠 안에 끝난다. 12시간 실측에서 유사도로 걸린 45건 대부분은 수개월~수년 된 정상
+프로젝트였다(oauth2-lib 는 2021년부터 55개 릴리스, langchaint 는 "It ain't langchain").
+
+같은 패키지가 같은 이유로 다시 걸리면 큐에 다시 넣지 않는다(``signature``) — dagz 는
+nightly 마다 같은 .pth 로 6번 올라왔다. 이유가 바뀌면(예: 정상이던 패키지의 새 버전에
+처음으로 난독화가 생김 — 계정 탈취의 전형) 다시 올린다. 오탐으로 기록한 것도 같은 규칙이다.
 """
 
 from __future__ import annotations
@@ -43,16 +50,28 @@ class CycleReport:
     scanned: int = 0
     deferred: int = 0                      # max_scans 초과로 다음 주기로 미룬 수
     flagged: list[dict] = field(default_factory=list)       # 큐에 넣은 스캔 결과
+    repeat: int = 0                        # 같은 패키지·같은 이유라 큐에 다시 넣지 않은 수
     failed: list[tuple[str, str]] = field(default_factory=list)  # (spec, 사유)
     skipped_invalid: list[str] = field(default_factory=list)     # 이름/버전 검증 실패
     feed_errors: list[str] = field(default_factory=list)
 
 
-def is_suspicious(record: dict) -> bool:
-    if record["verdict"] == "block":
-        return True
+def _lookalike_new_project(record: dict) -> bool:
     signals = record.get("risk_signals") or {}
-    return (signals.get("typosquat_score") or 0.0) >= TYPOSQUAT_MIN_RATIO
+    return bool(signals.get("is_new_account")) and (
+        (signals.get("typosquat_score") or 0.0) >= TYPOSQUAT_MIN_RATIO
+    )
+
+
+def is_suspicious(record: dict) -> bool:
+    return record["verdict"] == "block" or _lookalike_new_project(record)
+
+
+def signature(record: dict) -> tuple:
+    """"같은 이유로 걸렸다"의 기준 — 판정, 고위험 규칙 목록, 이름 사칭 여부."""
+    findings = record.get("static_findings", ())
+    high_rules = sorted({f["rule"] for f in findings if f["severity"] in ("high", "critical")})
+    return record["verdict"], tuple(high_rules), _lookalike_new_project(record)
 
 
 async def resolve_latest(name: str, http: httpx.AsyncClient) -> str:
@@ -127,6 +146,10 @@ async def run_cycle(
         await store.mark_seen(req.name, req.version, _now())
         report.scanned += 1
         if is_suspicious(record):
+            seen_before = await store.queued_records(req.name)
+            if any(signature(r) == signature(record) for r in seen_before):
+                report.repeat += 1
+                return
             await store.enqueue(record, _now())
             report.flagged.append(record)
 

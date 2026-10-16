@@ -44,6 +44,19 @@ def test_typosquat_flags_mcp_server_lookalike():
     assert features.typosquat_score("mcp-server-fetch") == 0.0
 
 
+def test_shared_namespace_prefix_does_not_inflate_similarity():
+    # 실측 오탐(감시 12시간) — 같은 mcp-server- 접두사만으로 0.8~0.9 가 나왔다
+    for name in ("mcp-server-lint", "mcp-server-sigma", "mcp-server-espn"):
+        assert features.typosquat_score(name) < features.TYPOSQUAT_MIN_RATIO
+    # 확장 패키지는 사칭이 아니다
+    assert features.typosquat_score("requests-toolbelt") < features.TYPOSQUAT_MIN_RATIO
+
+
+def test_one_keystroke_suffix_typo_in_namespace_is_flagged():
+    for name in ("mcp-server-fecth", "mcp-server-gti", "mcp-server-tmie"):
+        assert features.typosquat_score(name) >= HIGH_TYPOSQUAT
+
+
 def test_short_names_not_dragged_up_by_mcp_entries():
     # SDK 본체 "mcp" 를 목록에서 뺀 이유 — 세 글자 기준이면 정상 패키지가 튄다
     for name in ("mcap", "mcpi"):
