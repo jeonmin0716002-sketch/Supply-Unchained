@@ -80,13 +80,20 @@ _EXEC_SINKS = {"eval", "exec", "compile"}
 _B64_BLOB = re.compile(r"^[A-Za-z0-9+/=_-]{200,}$")
 
 
+#: 수신자를 이름으로 풀 수 없는 메서드 호출의 접두사 — ``f.read().decode()`` → ``?.decode``.
+#: 예전엔 수신자를 버리고 ``decode`` 만 남겨서 ``from codecs import decode`` 의 맨 이름과
+#: 구분이 안 됐다 (실측 오탐: seleniumbase setup.py 의 ``exec(f.read().decode("utf-8"))``
+#: 가 codecs.decode → exec 난독화로 잡혔다).
+_UNRESOLVED = "?"
+
+
 def _call_name(node: ast.AST) -> str | None:
     """Resolve a call target to a dotted name ('os.system', 'b64decode', ...)."""
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
         parent = _call_name(node.value)
-        return f"{parent}.{node.attr}" if parent else node.attr
+        return f"{parent or _UNRESOLVED}.{node.attr}"
     return None
 
 
@@ -95,11 +102,20 @@ def _matches(name: str, table: Iterable[str]) -> str | None:
 
     ``os.system(...)`` and ``system(...)`` after ``from os import system`` are
     the same risk, so a bare tail also matches a dotted table entry.
+
+    점이 없는 항목(``exec``·``eval``·``compile``)은 맨 이름이나 ``builtins.`` 로만 맞춘다.
+    아무 수신자의 메서드까지 맞추면 ``re.compile`` 이 실행 싱크 ``compile`` 이 되고
+    (실측 오탐: tocode-cli 의 ``re.compile(re.escape(bytes.fromhex(...)))``),
+    ``model.eval()`` 이 ``eval`` 이 된다.
     """
     for candidate in table:
+        if "." not in candidate:
+            if name in (candidate, f"builtins.{candidate}"):
+                return candidate
+            continue
         if name == candidate or name.endswith("." + candidate):
             return candidate
-        if "." in candidate and name == candidate.split(".")[-1]:
+        if name == candidate.split(".")[-1]:
             return candidate
     return None
 

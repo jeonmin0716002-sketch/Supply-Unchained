@@ -44,24 +44,56 @@ _SETUP_FILENAMES = {"setup.py"}
 # .pth 를 심는다(setup.py:85). 그걸 HIGH 로 잡으면 거의 모든 파이썬 환경에 깔려 있는
 # 패키지가 block 되고, 그런 스캐너는 아무도 안 쓴다. code_patterns.py 상단의 판단
 # 기준과 같다: 존재가 아니라 조합이 신호다.
-_HOOK_EXEC_SINKS = {
-    "system", "popen", "exec", "eval", "compile", "__import__",
-    "execv", "execve", "execl", "execlp", "execvp", "spawn", "spawnv",
-    "run", "call", "check_call", "check_output", "Popen",
-    "urlopen", "urlretrieve", "get", "post", "socket", "connect",
+#
+# 싱크는 이름의 흔함에 따라 세 부류로 맞춘다. 예전엔 속성 이름만 봐서 ``install.run(self)``
+# — 원래 설치를 진행시키는, 거의 모든 훅에 있는 위임 호출 — 이 subprocess.run 으로 잡혀
+# HIGH 가 났다 (실측 오탐: fwquant·jdaviz·otpme). dict.get()·db.connect() 도 같은 문제.
+
+#: 내장 실행 함수 — 맨 이름(또는 builtins.)일 때만. ``re.compile``·``model.eval()`` 제외.
+_BUILTIN_SINKS = {"exec", "eval", "compile", "__import__"}
+
+#: 이름 자체가 실행·다운로드 전용이라 수신자와 무관하게 맞춘다 (os.system, subprocess.Popen ...).
+_DISTINCT_SINKS = {
+    "system", "popen", "execv", "execve", "execl", "execlp", "execvp", "spawn", "spawnv",
+    "Popen", "check_call", "check_output", "urlopen", "urlretrieve",
 }
+
+#: 흔한 이름 — 실행·네트워크 모듈에서 불렀을 때만 (subprocess.run, requests.get, socket.connect).
+#: 알려진 한계: ``from subprocess import run; run(...)`` 처럼 맨 이름으로 부르면 못 잡는다
+#: (import 추적 없이는 dict.get 류와 구분할 수 없음). 그 경우 훅은 MEDIUM 으로 보고된다.
+_GENERIC_SINKS = {"run", "call", "get", "post", "put", "request", "socket", "connect",
+                  "create_connection"}
+_SINK_MODULES = {"subprocess", "requests", "httpx", "urllib", "urllib3", "socket", "http",
+                 "aiohttp"}
+
+
+def _dotted(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted(node.value)
+        return f"{parent}.{node.attr}" if parent else None
+    return None
+
+
+def _is_exec_sink(fn: ast.expr) -> bool:
+    if isinstance(fn, ast.Name):
+        return fn.id in _BUILTIN_SINKS | _DISTINCT_SINKS
+    if not isinstance(fn, ast.Attribute):
+        return False
+    if fn.attr in _DISTINCT_SINKS:
+        return True
+    receiver = _dotted(fn.value)
+    if fn.attr in _BUILTIN_SINKS:
+        return receiver == "builtins"
+    if fn.attr in _GENERIC_SINKS and receiver:
+        return receiver.split(".")[0] in _SINK_MODULES
+    return False
 
 
 def _calls_exec_sink(node: ast.AST) -> bool:
     """서브트리 안에서 실행·네트워크 싱크 호출이 보이면 True."""
-    for sub in ast.walk(node):
-        if not isinstance(sub, ast.Call):
-            continue
-        fn = sub.func
-        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
-        if name in _HOOK_EXEC_SINKS:
-            return True
-    return False
+    return any(isinstance(sub, ast.Call) and _is_exec_sink(sub.func) for sub in ast.walk(node))
 
 
 def _hook_class_defs(tree: ast.Module, value: ast.expr) -> ast.ClassDef | None:

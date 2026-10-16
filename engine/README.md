@@ -206,6 +206,9 @@ Bandit을 아무리 잘 붙여도 이 경로는 안 잡힙니다. 그래서 커�
 | `cmdclass={'build_ext': ...}` | 컴파일 확장 있는 정상 패키지가 광범위하게 씀 |
 | `subprocess.run([...])` (shell 없음) | 리스트 인자 + shell=False는 셸 인젝션 경로가 아님 |
 | 단독 `base64.b64decode(...)` | 아이콘·인증서 디코딩 등 정상 용도가 대부분 |
+| `re.compile(...)` · `model.eval()` | 실행 싱크 `exec`·`eval`·`compile` 은 맨 이름(또는 `builtins.`)일 때만 — 아무 객체의 같은 이름 메서드는 아님 (실측 오탐: tocode-cli) |
+| `exec(f.read().decode("utf-8"))` | `bytes.decode` 는 `codecs.decode` 가 아님. 수신자를 풀 수 없는 메서드는 디코더로 보지 않음 (실측 오탐: seleniumbase 버전 읽기) |
+| 설치 훅 안의 `install.run(self)` · `super().run()` | 원래 설치를 진행시키는 위임 호출. `run`·`get`·`connect` 같은 흔한 이름은 `subprocess`·`requests`·`socket` 등 실행·네트워크 모듈에서 불렀을 때만 싱크 (실측 오탐: fwquant·jdaviz·otpme) |
 
 마지막 항목이 `custom-obfuscated-payload`의 설계 이유입니다.
 Bandit은 `exec()` 하나, `b64decode()` 하나를 **서로 무관한 저심각도 2건**으로 봅니다.

