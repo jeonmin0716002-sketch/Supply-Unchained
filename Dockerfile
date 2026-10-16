@@ -25,6 +25,7 @@ COPY common/ common/
 COPY engine/ engine/
 COPY scoring/ scoring/
 COPY cli/ cli/
+COPY watcher/ watcher/
 COPY dashboard/ dashboard/
 
 # --- Secure Design: 비루트 실행 ---

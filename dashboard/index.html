@@ -99,6 +99,20 @@
   .progress{color:var(--muted);font-size:13px;font-family:var(--mono)}
   .batch-row{cursor:pointer} .batch-row:hover td{background:var(--surface2)}
 
+  /* ── 감시 큐 (PyPI watcher) ── */
+  #watch{margin-top:22px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .tabs button{background:none;color:var(--muted);border:1px solid var(--line);
+               padding:5px 12px;font-size:12.5px;font-weight:600}
+  .tabs button[aria-pressed="true"]{color:var(--ink);border-color:var(--accent)}
+  .q-actions{display:flex;gap:6px;flex-wrap:wrap}
+  .q-actions button{padding:4px 10px;font-size:12px;background:none;border:1px solid var(--line);color:var(--ink)}
+  .q-actions button.mal{color:var(--block);border-color:var(--block)}
+  .q-pkg{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+  .q-links a{font-size:12px;margin-right:8px}
+  .st{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  #queue .dot{display:inline-block;margin-top:6px}
+
 </style>
 </head>
 <body>
@@ -141,6 +155,21 @@
         <p class="hint"><code>name==version</code> 으로 고정된 줄만 스캔합니다(CI 게이트의
            <code>check-file</code> 과 같은 규칙). 행을 누르면 상세 결과를 봅니다.</p>
         <div id="batchResult"></div>
+      </div>
+
+      <div class="card" id="watch">
+        <h2>PyPI 감시 큐</h2>
+        <div class="tabs" role="group" aria-label="검토 상태">
+          <button data-st="new" aria-pressed="true">미검토</button>
+          <button data-st="malicious" aria-pressed="false">악성 확인</button>
+          <button data-st="reported" aria-pressed="false">신고 완료</button>
+          <button data-st="false_positive" aria-pressed="false">오탐</button>
+          <button data-st="" aria-pressed="false">전체</button>
+        </div>
+        <div id="queue"><p class="empty">큐가 비어 있습니다</p></div>
+        <p class="hint">감시기 실행: <code>python -m cli.su_scan watch</code> — 새 업로드를 설치 없이 스캔해
+           BLOCK 이거나 위험도 40 이상인 것만 올립니다. 코드는 <b>Inspector</b> 링크로 브라우저에서 확인하세요
+           (내려받거나 설치하지 마세요).</p>
       </div>
     </section>
 
@@ -371,11 +400,59 @@ function downloadSbom(){
   URL.revokeObjectURL(a.href);
 }
 
+/* ── PyPI 감시 큐 ── */
+let queueStatus = "new";
+const ST_LABEL = {new:"미검토", malicious:"악성 확인", reported:"신고 완료", false_positive:"오탐"};
+// 다음 단계 버튼: 미검토 → 악성/오탐, 악성 → 신고 완료. 잘못 눌렀을 때를 위해 되돌리기도 둔다.
+const NEXT = {new:[["malicious","악성"],["false_positive","오탐"]],
+              malicious:[["reported","신고 완료"],["new","되돌리기"]],
+              reported:[["malicious","되돌리기"]], false_positive:[["new","되돌리기"]]};
+
+async function loadQueue(){
+  try{
+    const q = queueStatus ? "?status="+encodeURIComponent(queueStatus) : "";
+    const rows = await (await fetch("/api/v1/watch/queue"+q)).json();
+    if(!rows.length){ $("#queue").innerHTML = `<p class="empty">항목 없음</p>`; return; }
+    $("#queue").innerHTML = `<div class="tablewrap"><table>
+      <tr><th></th><th>패키지</th><th>점수</th><th>상태</th><th>확인</th><th>판정 기록</th></tr>
+      ${rows.map(r=>{
+        const n = encodeURIComponent(r.name), v = encodeURIComponent(r.version);
+        return `<tr>
+        <td><span class="dot d-${esc(r.verdict)}" aria-label="${esc(r.verdict)}"></span></td>
+        <td class="mono"><span class="q-pkg" data-scan="${r.scan_id}">${esc(r.name)}==${esc(r.version)}</span>
+          <div class="st">${esc((r.created_at||"").slice(5,16).replace("T"," "))}${r.note?" · "+esc(r.note):""}</div></td>
+        <td class="mono">${r.risk_score}</td>
+        <td class="st">${esc(ST_LABEL[r.status]||r.status)}</td>
+        <td class="q-links"><a href="https://inspector.pypi.io/project/${n}/${v}/" target="_blank" rel="noopener noreferrer">Inspector</a><a
+           href="https://pypi.org/project/${n}/${v}/" target="_blank" rel="noopener noreferrer">PyPI</a></td>
+        <td><div class="q-actions">${(NEXT[r.status]||[]).map(([s,l])=>
+          `<button class="${s==="malicious"?"mal":""}" data-id="${r.id}" data-to="${s}">${l}</button>`).join("")}</div></td>
+      </tr>`}).join("")}</table></div>`;
+    document.querySelectorAll(".q-pkg").forEach(el=>el.addEventListener("click", async ()=>{
+      const res = await fetch("/api/v1/scans/"+el.dataset.scan);
+      if(res.ok){ renderResult(await res.json()); $("#result").scrollIntoView({behavior:"smooth"}); }
+    }));
+    document.querySelectorAll(".q-actions button").forEach(b=>b.addEventListener("click", async ()=>{
+      const body = {status:b.dataset.to};
+      if(b.dataset.to==="false_positive"){ const n = prompt("오탐 사유 (선택)"); if(n) body.note = n; }
+      const res = await fetch("/api/v1/watch/queue/"+b.dataset.id,{method:"PATCH",
+        headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      if(res.ok) loadQueue();
+    }));
+  }catch(e){ /* API 미기동 시 조용히 유지 */ }
+}
+document.querySelectorAll("#watch .tabs button").forEach(b=>b.addEventListener("click",()=>{
+  queueStatus = b.dataset.st;
+  document.querySelectorAll("#watch .tabs button").forEach(x=>x.setAttribute("aria-pressed", String(x===b)));
+  loadQueue();
+}));
+
 $("#batchBtn").addEventListener("click", batchScan);
 $("#sbomBtn").addEventListener("click", downloadSbom);
 $("#scanBtn").addEventListener("click", scan);
 [["#pkgName"],["#pkgVer"]].forEach(([s])=>$(s).addEventListener("keydown",e=>{if(e.key==="Enter")scan();}));
 loadHistory();
+loadQueue();
 </script>
 </body>
 </html>

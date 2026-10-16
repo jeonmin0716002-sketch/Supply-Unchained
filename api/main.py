@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from api.routers import proxy, scan
+from api.routers import proxy, scan, watch
 from api.storage import ScanStore
 
 _DASHBOARD_HTML = Path(__file__).resolve().parents[1] / "dashboard" / "index.html"
@@ -151,6 +151,7 @@ app.add_exception_handler(
 
 app.include_router(scan.router)
 app.include_router(proxy.router)
+app.include_router(watch.router)
 
 
 @app.get("/health", tags=["meta"])

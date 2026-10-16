@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 
 import httpx
 import typer
@@ -359,6 +360,68 @@ def history(limit: int = typer.Option(20, help="가져올 개수")) -> None:
             r["scanned_at"][:19].replace("T", " "),
         )
     console.print(t)
+
+
+# ──────────────────────────────
+# PyPI 감시기 — 새 업로드를 설치 없이 스캔해 의심 건을 검토 큐에 쌓는다
+# ──────────────────────────────
+
+@app.command()
+def watch(
+    interval: int = typer.Option(300, min=60, help="주기(초). PyPI 피드는 몇 분 단위로 갱신된다"),
+    once: bool = typer.Option(False, "--once", help="한 주기만 돌고 종료"),
+    max_scans: int = typer.Option(50, min=1, help="주기당 최대 스캔 수 (초과분은 다음 주기로)"),
+    concurrency: int = typer.Option(3, min=1, max=10, help="동시 스캔 수"),
+) -> None:
+    """PyPI 신규 패키지·릴리스를 감시해 의심 패키지를 검토 큐에 쌓는다.
+
+    큐는 대시보드(/dashboard)의 '감시 큐'에서 검토한다. 이 프로세스는 서버 없이 돌고
+    API 서버와 같은 SQLite(SU_DB_PATH)에 쓴다. 패키지를 설치·실행하지 않는다.
+    """
+    from api.routers.scan import run_scan
+    from api.storage import ScanStore
+    from watcher.runner import run_cycle
+
+    async def _loop() -> None:
+        store = ScanStore()
+        await store.init()
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(_TIMEOUT),
+            limits=httpx.Limits(max_connections=20),
+            follow_redirects=True,
+            headers={"User-Agent": "supply-unchained-watcher/0.1"},
+        ) as http:
+            while True:
+                report = await run_cycle(
+                    http=http, store=store, scan=run_scan,
+                    max_scans=max_scans, concurrency=concurrency,
+                )
+                _render_cycle(report)
+                if once:
+                    return
+                await asyncio.sleep(interval)
+
+    try:
+        _run_local(_loop())
+    except KeyboardInterrupt:
+        console.print("[dim]감시 종료[/dim]")
+
+
+def _render_cycle(report) -> None:
+    stamp = datetime.now().strftime("%H:%M:%S")
+    console.print(
+        f"[dim]{stamp}[/dim] 피드 {report.fetched} · 스캔 {report.scanned} · "
+        f"[red]의심 {len(report.flagged)}[/red] · 실패 {len(report.failed)}"
+        + (f" · 다음 주기로 {report.deferred}" if report.deferred else "")
+    )
+    for err in report.feed_errors:
+        console.print(f"  [yellow]피드 조회 실패[/yellow] {err}")
+    for r in report.flagged:
+        _label, color = _style(r["verdict"])
+        console.print(
+            f"  [{color}]{r['verdict'].upper()}[/{color}] {r['name']}=={r['version']} "
+            f"(위험도 {r['risk_score']}) — {'; '.join(r['verdict_reasons'])}"
+        )
 
 
 # ──────────────────────────────

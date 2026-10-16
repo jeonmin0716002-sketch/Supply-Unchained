@@ -34,6 +34,7 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 | 대시보드 — 단건·requirements 일괄 스캔, CycloneDX SBOM 내보내기 (`dashboard/index.html`) | 동작 |
 | CI 2종 (테스트 + 공급망 스캔 게이트) | 동작 |
 | 컨테이너 이미지 배포 (GHCR, `docker-publish.yml`) | 동작 |
+| PyPI 감시기 — 신규 업로드 자동 스캔 + 검토 큐 (`watcher/`, `su_scan watch`) | 동작 |
 
 임계값·규칙셋은 검증 샘플로 계속 튜닝 중입니다.
 
@@ -284,6 +285,34 @@ uv run python -m cli.su_scan check-file requirements.txt   # block 있으면 exi
 
 ---
 
+## PyPI 감시기 — 새로 올라오는 악성 패키지 찾기
+
+설치 시점 차단이 "내 프로젝트를 지키는" 쪽이라면, 감시기는 같은 엔진으로 PyPI 전체를
+지켜보는 쪽입니다. 새 프로젝트 피드(`packages.xml`)와 새 릴리스 피드(`updates.xml`)를
+주기적으로 읽어, 처음 보는 `name==version` 만 통합 스캔에 태웁니다.
+
+```bash
+uv run python -m cli.su_scan watch            # 5분 주기로 계속
+uv run python -m cli.su_scan watch --once     # 한 주기만
+```
+
+* **설치·실행하지 않습니다.** 스캔 경로가 `run_scan` 그대로라 아카이브를 안전 추출해
+  정적분석만 합니다. 하루 수천 건의 신뢰할 수 없는 업로드를 다루는 도구라 가장 중요한 원칙입니다.
+* **검토 큐에는 악성 의심만 올립니다** — `block` 이거나 메타데이터 위험도 40 이상.
+  알려진 CVE 만 있는 정상 패키지의 `warn` 은 헌팅 목적과 무관한 노이즈라 제외합니다.
+* 스캔에 실패한 릴리스는 "본 것"으로 표시하지 않아, 피드에 남아 있는 동안 다음 주기에
+  재시도됩니다. 피드 조회 실패는 삼키지 않고 출력합니다.
+* 대시보드의 **PyPI 감시 큐**에서 검토합니다. 코드는 PyPI Inspector 링크로 브라우저에서
+  확인하고(내려받지 않음), `악성 확인 → 신고 완료` 또는 `오탐` 으로 기록합니다. 오탐 기록은
+  지우지 않고 임계값 튜닝의 실측 데이터로 씁니다.
+* 악성으로 확인되면 PyPI 에 신고하고 [OpenSSF malicious-packages](https://github.com/ossf/malicious-packages)
+  에 등록합니다(등록되면 OSV 에 `MAL-` ID 로 공개되어 다른 도구들도 차단에 씁니다).
+
+API 서버와는 별도 프로세스로 돌고 같은 SQLite(`SU_DB_PATH`)만 공유합니다. 하루 종일
+외부 업로드를 받아 푸는 작업을 pip 프록시와 같은 수명에 묶지 않기 위해서입니다.
+
+---
+
 ## 위험도 스코어링 규칙 (초안)
 
 메타데이터에서 위험 신호를 뽑아 규칙 기반 가중치로 합산합니다. 대량 학습 데이터는
@@ -354,7 +383,8 @@ Supply-Unchained/
 │   ├── cwe.py              #   CWE 태깅
 │   └── routers/
 │       ├── scan.py         #   POST /api/v1/scan + 종합 판정 + Bandit
-│       └── proxy.py        #   pip 인덱스 프록시
+│       ├── proxy.py        #   pip 인덱스 프록시
+│       └── watch.py        #   감시기 검토 큐 API
 │
 ├── common/pypi.py          # PyPI 조회 · 아카이브 다운로드 · 안전 추출
 │
@@ -372,6 +402,7 @@ Supply-Unchained/
 │   └── popular_packages.py #   typosquat 비교 대상
 │
 ├── cli/su_scan.py          # CLI (명시 호출 진입점 · pip 래퍼용 guard)
+├── watcher/                # PyPI 감시기 (피드 수집 · 주기 스캔 · 검토 큐 적재)
 ├── tools/                  # 셸 래퍼 (pip install 가로채기)
 ├── dashboard/index.html    # 스캔·일괄 스캔·CycloneDX SBOM 내보내기
 │

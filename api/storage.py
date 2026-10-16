@@ -42,7 +42,30 @@ CREATE TABLE IF NOT EXISTS scans (
 );
 CREATE INDEX IF NOT EXISTS idx_scans_pkg ON scans (name, version);
 CREATE INDEX IF NOT EXISTS idx_scans_time ON scans (scanned_at DESC);
+
+-- PyPI 감시기(watcher/) — 이미 스캔한 릴리스와, 사람이 확인할 의심 패키지 큐
+CREATE TABLE IF NOT EXISTS watch_seen (
+    name     TEXT NOT NULL,
+    version  TEXT NOT NULL,
+    seen_at  TEXT NOT NULL,
+    PRIMARY KEY (name, version)
+);
+CREATE TABLE IF NOT EXISTS watch_queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id     INTEGER NOT NULL REFERENCES scans (id),
+    name        TEXT NOT NULL,
+    version     TEXT NOT NULL,
+    verdict     TEXT NOT NULL,
+    risk_score  INTEGER NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'new',
+    note        TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_watch_queue_status ON watch_queue (status, id DESC);
 """
+# watch_queue.status 값은 api/routers/watch.py 의 WatchStatus 가 정의한다.
+# 오탐(false_positive) 기록은 지우지 않는다 — 임계값 튜닝의 실측 데이터다.
 
 
 def db_path() -> str:
@@ -110,6 +133,72 @@ class ScanStore:
             ).fetchone()
         return json.loads(row["response_json"]) if row else None
 
+    def _unseen(self, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        with self._connect() as conn:
+            return [
+                (n, v)
+                for n, v in items
+                if conn.execute(
+                    "SELECT 1 FROM watch_seen WHERE name = ? AND version = ?", (n, v)
+                ).fetchone()
+                is None
+            ]
+
+    def _seen_names(self, names: list[str]) -> set[str]:
+        with self._connect() as conn:
+            return {
+                n
+                for n in names
+                if conn.execute("SELECT 1 FROM watch_seen WHERE name = ? LIMIT 1", (n,)).fetchone()
+            }
+
+    def _mark_seen(self, name: str, version: str, now: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO watch_seen (name, version, seen_at) VALUES (?, ?, ?)",
+                (name, version, now),
+            )
+
+    def _enqueue(self, record: dict, now: str) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO watch_queue (scan_id, name, version, verdict, risk_score,"
+                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record["scan_id"],
+                    record["name"],
+                    record["version"],
+                    record["verdict"],
+                    record["risk_score"],
+                    now,
+                    now,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def _queue(self, status: str | None, limit: int) -> list[dict]:
+        sql = "SELECT * FROM watch_queue"
+        args: tuple = ()
+        if status:
+            sql += " WHERE status = ?"
+            args = (status,)
+        sql += " ORDER BY id DESC LIMIT ?"
+        with self._connect() as conn:
+            rows = conn.execute(sql, (*args, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def _update_queue(
+        self, item_id: int, status: str, note: str | None, now: str
+    ) -> dict | None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE watch_queue SET status = ?, note = COALESCE(?, note), updated_at = ?"
+                " WHERE id = ?",
+                (status, note, now, item_id),
+            )
+            row = conn.execute("SELECT * FROM watch_queue WHERE id = ?", (item_id,)).fetchone()
+        return dict(row) if row else None
+
     # ── async facade used by the routers ─────────────────────────────
 
     async def init(self) -> None:
@@ -128,3 +217,29 @@ class ScanStore:
 
     async def get(self, scan_id: int) -> dict | None:
         return await asyncio.to_thread(self._get, scan_id)
+
+    # ── PyPI 감시기 ──────────────────────────────────────────────────
+
+    async def unseen(self, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """아직 스캔하지 않은 (name, version) 만 순서를 지켜 돌려준다."""
+        return await asyncio.to_thread(self._unseen, items)
+
+    async def seen_names(self, names: list[str]) -> set[str]:
+        """이 중 어떤 버전이든 한 번이라도 스캔한 이름."""
+        return await asyncio.to_thread(self._seen_names, names)
+
+    async def mark_seen(self, name: str, version: str, now: str) -> None:
+        await asyncio.to_thread(self._mark_seen, name, version, now)
+
+    async def enqueue(self, record: dict, now: str) -> int:
+        """스캔 결과(run_scan 응답 dict)를 검토 큐에 넣는다."""
+        return await asyncio.to_thread(self._enqueue, record, now)
+
+    async def queue(self, status: str | None = None, limit: int = 100) -> list[dict]:
+        return await asyncio.to_thread(self._queue, status, limit)
+
+    async def update_queue(
+        self, item_id: int, status: str, note: str | None, now: str
+    ) -> dict | None:
+        """상태를 바꾼다. note 가 None 이면 기존 메모를 유지한다."""
+        return await asyncio.to_thread(self._update_queue, item_id, status, note, now)
