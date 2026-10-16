@@ -30,6 +30,7 @@ import subprocess
 import sys
 import warnings
 from datetime import datetime
+from functools import partial
 
 import httpx
 import typer
@@ -371,10 +372,17 @@ def history(limit: int = typer.Option(20, help="가져올 개수")) -> None:
 
 @app.command()
 def watch(
-    interval: int = typer.Option(300, min=60, help="주기(초). PyPI 피드는 몇 분 단위로 갱신된다"),
+    interval: int = typer.Option(
+        120, min=60, help="주기 사이 대기(초). 피드는 최근 항목만 보여줘 길면 놓친다"
+    ),
     once: bool = typer.Option(False, "--once", help="한 주기만 돌고 종료"),
-    max_scans: int = typer.Option(50, min=1, help="주기당 최대 스캔 수 (초과분은 다음 주기로)"),
+    # 기본값이 피드 한 번 분량(새 프로젝트 40 + 새 릴리스 100)보다 크게 잡혀 있어, 보통은
+    # 다음 주기로 밀리는 항목이 없다. 밀리면 그 사이 피드에서 빠져 놓칠 수 있다.
+    max_scans: int = typer.Option(150, min=1, help="주기당 최대 스캔 수 (초과분은 다음 주기로)"),
     concurrency: int = typer.Option(3, min=1, max=10, help="동시 스캔 수"),
+    with_bandit: bool = typer.Option(
+        False, "--with-bandit", help="Bandit 레이어도 돌린다 (느림 — 큐 기준에는 기여하지 않음)"
+    ),
 ) -> None:
     """PyPI 신규 패키지·릴리스를 감시해 의심 패키지를 검토 큐에 쌓는다.
 
@@ -406,7 +414,7 @@ def watch(
         ) as http:
             while True:
                 report = await run_cycle(
-                    http=http, store=store, scan=run_scan,
+                    http=http, store=store, scan=partial(run_scan, bandit=with_bandit),
                     max_scans=max_scans, concurrency=concurrency,
                 )
                 _render_cycle(report)

@@ -93,6 +93,37 @@ def _patch_layers(
     monkeypatch.setattr(scan, "_layer_scoring", fake_scoring)
 
 
+def test_run_scan_without_bandit_skips_layer_and_says_so(tmp_path, monkeypatch):
+    """감시 모드(bandit=False) — 레이어를 부르지 않고, 생략 사실을 판정 사유에 남긴다."""
+    import asyncio
+
+    from api.storage import ScanStore
+
+    _patch_layers(monkeypatch)
+    called = []
+
+    async def spy_bandit(req, ctx, errors):
+        called.append(req.name)
+        return []
+
+    monkeypatch.setattr(scan, "_layer_bandit", spy_bandit)
+
+    async def go(bandit):
+        store = ScanStore(str(tmp_path / "b.db"))
+        await store.init()
+        async with httpx.AsyncClient() as http:
+            return await scan.run_scan(
+                ScanRequest(name="httpx", version="0.27.0"), http=http, store=store, bandit=bandit
+            )
+
+    skipped = asyncio.run(go(False))
+    assert called == []
+    assert any("Bandit 레이어 생략" in r for r in skipped.verdict_reasons)
+
+    asyncio.run(go(True))
+    assert called == ["httpx"]
+
+
 # ──────────────────────────────
 # /api/v1/scan — 판정 배선
 # ──────────────────────────────

@@ -453,11 +453,24 @@ def _decide(
 # 파이프라인 (프록시에서도 재사용하므로 핸들러와 분리)
 # ──────────────────────────────
 
+async def _no_findings() -> list[StaticFinding]:
+    return []
+
+
 async def run_scan(
-    req: ScanRequest, *, http: httpx.AsyncClient, store: ScanStore
+    req: ScanRequest, *, http: httpx.AsyncClient, store: ScanStore, bandit: bool = True
 ) -> ScanResponse:
+    """통합 스캔.
+
+    ``bandit=False`` 는 PyPI 감시기(watcher/) 전용이다. Bandit 결과는 판정 심각도가
+    MEDIUM 으로 상한이 걸려(_BANDIT_SEVERITY_CAP) block 을 만들지 못하므로, block 과
+    이름 유사도만 보는 감시 큐 기준에 기여하지 않는다. 그런데 가장 느린 레이어다
+    (실측: 5개 패키지 15.9초 → 10.0초, 판정 동일). 생략했다는 사실은 판정 사유에 남긴다.
+    """
     layer_errors: list[str] = []
     notes: list[str] = []
+    if not bandit:
+        notes.append("감시 모드 — Bandit 레이어 생략 (커스텀 규칙·CVE·메타데이터로 판정)")
 
     if OFFLINE_DEMO:
         vulns, findings, (signals, risk_score) = _demo_layers(req)
@@ -471,7 +484,7 @@ async def run_scan(
             vulns, findings, bandit_findings, (signals, risk_score) = await asyncio.gather(
                 _layer_cve(req, http, layer_errors),
                 _layer_static(req, ctx, layer_errors),
-                _layer_bandit(req, ctx, layer_errors),
+                _layer_bandit(req, ctx, layer_errors) if bandit else _no_findings(),
                 _layer_scoring(req, ctx, layer_errors),
             )
             findings = findings + bandit_findings
