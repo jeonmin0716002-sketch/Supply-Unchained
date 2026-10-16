@@ -35,7 +35,7 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 | CI 2종 (테스트 + 공급망 스캔 게이트) | 동작 |
 | 컨테이너 이미지 배포 (GHCR, `docker-publish.yml`) | 동작 |
 | PyPI 감시기 — 신규 업로드 자동 스캔 + 검토 큐 (`watcher/`, `su_scan watch`) | 동작 |
-| 실측 평가 — 실제 악성 300개 탐지율 73.3% · 정상 상위 300개 오탐률 0.7% (`tools/eval_*.py`) | 동작 |
+| 실측 평가 — 실제 악성 300개 탐지율 77.0% · 탈취 패키지 29개 62% · 정상 상위 300개 오탐률 0.7% (`tools/eval_*.py`) | 동작 |
 
 임계값·규칙셋은 검증 샘플로 계속 튜닝 중입니다.
 
@@ -293,13 +293,21 @@ uv run python -m cli.su_scan check-file requirements.txt   # block 있으면 exi
 
 | 지표 | 데이터 | 결과 |
 |---|---|---|
-| 탐지율 (차단) | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중 무작위 300개 (패키지당 1버전, seed 42) | **73.3%** (220/300) |
+| 탐지율 — 악성 목적 패키지 | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중 무작위 300개 (패키지당 1버전, seed 42) | **77.0%** (231/300) |
+| 탐지율 — 탈취된 정상 패키지 | 같은 데이터셋 `compromised_lib` 전체 (17개 패키지, 29개 버전 — ultralytics·litellm·mistralai·telnyx 등 실제 사고) | **62%** (18/29) |
 | 오탐률 (차단) | PyPI 다운로드 상위 300개 최신 버전 ([top-pypi-packages](https://hugovk.github.io/top-pypi-packages/)) | **0.7%** (2/289, 11개는 다운로드 오류) |
 
 ```bash
-uv run python tools/eval_malware_dataset.py --n 300 --seed 42   # 탐지율
-uv run python tools/eval_benign_top.py --n 300                  # 오탐률
+uv run python tools/eval_malware_dataset.py --n 300 --seed 42                  # 악성 목적
+uv run python tools/eval_malware_dataset.py --kind compromised_lib --all-versions  # 탈취
+uv run python tools/eval_benign_top.py --n 300                                 # 오탐률
 ```
+
+탈취 패키지는 수천 줄짜리 정상 라이브러리라, "끼워 넣은 코드를 잡은 것인지"를 따로 확인했다.
+각 패키지의 **직전 정상 버전**을 같은 엔진으로 돌리면 16개 중 15개가 탐지 없음이었다. 예외는
+ultralytics 8.3.40 — import 시 인터넷 연결 확인(`socket.create_connection`)을 해서 정상 버전도
+걸린다. 그래서 그 코드로만 걸린 탈취 버전 8.3.41·8.3.42 는 탐지로 세지 않았고(위 18/29 에서
+제외), 실제 악성 코드(`os.system("curl ...")`)로 걸린 8.3.45·8.3.46 만 셌다.
 
 같은 300개로 처음 측정했을 때 차단율은 **13%** 였습니다. 놓친 샘플의 78% 가 훅도
 난독화도 없이 `setup.py` 최상단에서 바로 네트워크 전송·숨김 PowerShell 을 실행했는데,
@@ -308,14 +316,25 @@ uv run python tools/eval_benign_top.py --n 300                  # 오탐률
 더했고, 정상 300개에서 나온 오탐(통신하지 않는 생성자, import 되지 않는 보조 스크립트 등)을
 걷어내 위 수치가 됐습니다. 근거는 각 규칙 docstring 과 `tests/test_engine.py` 에 있습니다.
 
-**알려진 한계 — 놓치는 27% (80개)**
+이후 난독화 변형을 보강했다 — `__import__('base64')` 로 이름 숨기기, 모듈 별칭(`import base64 as b`),
+`chr()` 로 소스 조립, 같은 파일의 자체 디코더 함수·람다, 디코딩 결과를 변수에 담았다 실행하기.
+그리고 **2MB 를 넘긴 setup.py 가 크기 상한 때문에 검사에서 통째로 빠지던 우회로**를 막았다
+(설치·import 진입점은 크기와 무관하게 검사). 73.3% → 77.0%, 오탐률 변화 없음.
+
+**알려진 한계 — 악성 목적 300개 중 놓치는 23% (69개)**
 
 | 유형 | 수 | 이유 |
 |---|--:|---|
-| 부르는 곳이 정적으로 보이지 않는 네트워크 코드 | 29 | 사용자가 함수를 직접 호출해야 도는 페이로드는 설치·import 시점 범위 밖 |
-| 난독화·동적 실행 (네트워크가 겉으로 안 보임) | 27 | 디코딩→exec 체인이 아닌 형태(marshal·zlib 단독, 다단계 문자열 조립 등) |
-| 알려진 수상 토큰 없는 프로세스 실행 | 16 | 평범해 보이는 명령으로 2단계 페이로드를 받는 경우 |
+| 부르는 곳이 정적으로 보이지 않는 네트워크 코드 | 28 | 사용자가 함수를 직접 호출해야 도는 페이로드는 설치·import 시점 범위 밖 |
+| 난독화·동적 실행 (디코딩→실행이 아닌 형태) | 18 | 짧은 문자열 eval, 상수 문자열 exec 등 디코딩 단계가 없는 형태 |
+| 알려진 수상 토큰 없는 프로세스 실행 | 15 | 평범해 보이는 명령으로 2단계 페이로드를 받는 경우 |
 | 코드 없음·PoC | 8 | 메타데이터만 있거나 무해한 테스트 패키지 |
+
+탈취 패키지에서 놓친 것도 같은 축이다 — lightning 2.6.2 는 import 시 백그라운드 스레드에서
+번들 스크립트를 `subprocess.Popen` 으로 띄우고, memoryos 2.0.34 는 바이너리에 실행 권한을 주고
+실행한다. 둘 다 명령 문자열에 알려진 수상 토큰이 없다. "import 시점 프로세스 실행" 자체를 잡는
+규칙이 다음 후보지만, 정상 라이브러리(버전용 git 호출·GPU 확인 등)를 건드릴 수 있어 오탐률
+측정과 함께 넣어야 한다.
 
 측정 중 발견한 것 하나: Windows Defender 는 실제 악성 파일의 **읽기 자체를 막습니다**
 (OSError 22). 예전 엔진은 읽지 못한 파일을 조용히 건너뛰어 "검사했고 깨끗했다"로
