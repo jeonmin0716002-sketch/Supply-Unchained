@@ -34,6 +34,7 @@ from datetime import datetime
 import httpx
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -386,7 +387,10 @@ def watch(
 
     # bandit 은 패키지 소스의 "# nosec" 주석 같은 걸 만날 때마다 경고를 로깅하는데, 핸들러가
     # 없으면 stderr 로 그대로 나와 주기 요약을 덮는다. 수십 개 패키지를 도는 감시에선 소음이다.
-    logging.getLogger("bandit").setLevel(logging.ERROR)
+    # ERROR 도 끈다: "Bandit internal error running ..." 은 bandit 플러그인 자체의 버그
+    # (예: 집합 안의 집합 리터럴에서 unhashable type) 로, bandit 이 잡아서 그 호출 하나만
+    # 건너뛰고 계속 돈다. 판정에 영향이 없는 traceback 수십 줄이 요약을 덮을 뿐이다.
+    logging.getLogger("bandit").setLevel(logging.CRITICAL)
     # 스캔 대상 패키지 소스를 파싱할 때 Python 이 내는 SyntaxWarning(예: "invalid escape
     # sequence '\ '") 도 같은 소음이다 — 남의 코드 품질 경고라 판정과 무관하다.
     warnings.filterwarnings("ignore", category=SyntaxWarning)
@@ -424,12 +428,23 @@ def _render_cycle(report) -> None:
         + (f" · 다음 주기로 {report.deferred}" if report.deferred else "")
     )
     for err in report.feed_errors:
-        console.print(f"  [yellow]피드 조회 실패[/yellow] {err}")
+        console.print(f"  [yellow]피드 조회 실패[/yellow] {escape(err)}")
+    for spec, why in report.failed:
+        # 실패한 릴리스는 seen 으로 표시되지 않아 다음 주기에 재시도된다
+        console.print(
+            f"  [yellow]실패[/yellow] {escape(spec)} — {escape(why[:200])} [dim](재시도 예정)[/dim]"
+        )
     for r in report.flagged:
         _label, color = _style(r["verdict"])
+        reasons = "; ".join(r["verdict_reasons"])
+        if r["verdict"] != "block":
+            # block 이 아닌데 큐에 왔다면 이름 유사도 때문이다 — 판정 사유만 보면 이유를 모른다
+            typo = (r.get("risk_signals") or {}).get("typosquat_score")
+            reasons = f"인기 패키지와 이름 유사도 {typo} · {reasons}"
+        pkg = escape(f"{r['name']}=={r['version']}")
         console.print(
-            f"  [{color}]{r['verdict'].upper()}[/{color}] {r['name']}=={r['version']} "
-            f"(위험도 {r['risk_score']}) — {'; '.join(r['verdict_reasons'])}"
+            f"  [{color}]{r['verdict'].upper()}[/{color}] {pkg} "
+            f"(위험도 {r['risk_score']}) — {escape(reasons)}"
         )
 
 
