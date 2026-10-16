@@ -12,15 +12,13 @@ cross-part contract, so the engine has no private finding type to translate.
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from api.schemas import Severity, StaticFinding
-
-if TYPE_CHECKING:
-    import ast
 
 
 class SourceTree(Protocol):
@@ -115,3 +113,52 @@ def make_finding(
         location=f"{ctx.relpath}:{line}",
         detail=detail,
     )
+
+
+# ── 이름 해석 (규칙 공용) ─────────────────────────────────────────
+
+def dotted_name(node: ast.AST) -> str | None:
+    """호출 대상을 점 이름으로. ``__import__('base64').b64decode`` → ``base64.b64decode``.
+
+    ``__import__('builtins').exec(__import__('base64').b64decode(...))`` 는 실측 악성
+    샘플(aio3·pthttp)이 import 문 없이 이름을 숨기는 방식이다.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = dotted_name(node.value)
+        return f"{parent}.{node.attr}" if parent else None
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "__import__"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ):
+        return node.args[0].value
+    return None
+
+
+def import_aliases(tree: ast.Module) -> dict[str, str]:
+    """import 별칭 → 실제 이름. ``from os import system as _ssystem``·``import base64 as b``
+    처럼 이름을 바꿔 숨기는 게 실측 샘플(fluiddaddy·xolo*)에 있었다. 맨 이름 import 도
+    풀린다 (``from subprocess import run`` → ``subprocess.run``)."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                top = a.name.split(".")[0]
+                out[a.asname or top] = a.name if a.asname else top
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for a in node.names:
+                out[a.asname or a.name] = f"{node.module}.{a.name}"
+    return out
+
+
+def resolve_name(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    name = dotted_name(node)
+    if not name:
+        return None
+    head, dot, rest = name.partition(".")
+    return aliases[head] + dot + rest if head in aliases else name

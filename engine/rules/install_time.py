@@ -27,7 +27,13 @@ from collections.abc import Iterable, Iterator
 from pathlib import PurePosixPath
 
 from api.schemas import Severity, StaticFinding
-from engine.rules.base import FileContext, make_finding
+from engine.rules.base import (
+    FileContext,
+    dotted_name,
+    import_aliases,
+    make_finding,
+    resolve_name,
+)
 
 RULE_INSTALL_TIME = "custom-install-time-exec"
 RULE_EXFIL = "custom-exfil-endpoint"
@@ -78,36 +84,10 @@ _EXFIL_PATTERNS = (
 
 # ── 이름 해석 ─────────────────────────────────────────────────────
 
-def _dotted(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted(node.value)
-        return f"{parent}.{node.attr}" if parent else None
-    return None
-
-
-def _aliases(tree: ast.Module) -> dict[str, str]:
-    """import 별칭 → 실제 이름. ``from os import system as _ssystem`` 처럼 이름을 바꿔 숨기는
-    게 실측 샘플(fluiddaddy)에 있었다. 맨 이름 import 도 풀린다 (from subprocess import run)."""
-    out: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                top = a.name.split(".")[0]
-                out[a.asname or top] = a.name if a.asname else top
-        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            for a in node.names:
-                out[a.asname or a.name] = f"{node.module}.{a.name}"
-    return out
-
-
-def _resolve(func: ast.AST, aliases: dict[str, str]) -> str | None:
-    name = _dotted(func)
-    if not name:
-        return None
-    head, dot, rest = name.partition(".")
-    return aliases[head] + dot + rest if head in aliases else name
+# 규칙 공용 이름 해석 (engine/rules/base.py)
+_dotted = dotted_name
+_aliases = import_aliases
+_resolve = resolve_name
 
 
 def _is_network_call(call: ast.Call, aliases: dict[str, str]) -> bool:

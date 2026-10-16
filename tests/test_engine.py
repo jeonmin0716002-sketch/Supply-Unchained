@@ -677,3 +677,59 @@ def test_unreadable_files_are_reported_not_silently_skipped(tmp_path, monkeypatc
     unreadable: list[str] = []
     assert analyze_path(tmp_path, unreadable=unreadable) == []
     assert unreadable == ["setup.py"]
+
+
+# ── 난독화 변형 (실제 악성 300개 중 놓친 것들의 구조) ──────────────
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # aio3·pthttp — import 문 없이 __import__ 로 이름 숨기기
+        "__import__('builtins').exec(__import__('builtins').compile("
+        "__import__('base64').b64decode(P), '<string>', 'exec'))\n",
+        # xolo* — 모듈 별칭
+        "import base64 as b\nexec(b.b64decode(P))\n",
+        # colors-update·promptcolor — chr() 로 소스 조립
+        "eval(''.join(chr(c) for c in [112, 114, 105, 110, 116]))\n",
+        # dasdsajdjsadsad·forgepys — 자체 디코더 람다
+        "import base64, zlib\n__vare__ = lambda s: zlib.decompress(base64.b64decode(s))\n"
+        "exec(__vare__(P))\n",
+        # invokehttp — 자체 디코더 함수를 한 번 더 감싼 경우
+        "import base64\ndef _d(s):\n    return base64.b64decode(s)\n"
+        "def invoke(s):\n    return _d(s)\nexec(invoke(P))\n",
+        # aes44 — 디코딩 결과를 변수에 담았다가 실행
+        "import base64\ncode = base64.b64decode(P)\neval(compile(code, '<x>', 'exec'))\n",
+    ],
+)
+def test_wrapped_decode_then_execute_is_high(tmp_path, src):
+    (tmp_path / "mod.py").write_text(src, encoding="utf-8")
+    obf = [f for f in analyze_path(tmp_path) if f.rule == RULE_OBFUSCATED]
+    assert obf and obf[0].severity is Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # 소스 파일을 읽어 실행하는 평범한 관용구 — 디코딩이 없다
+        "src = open('v.py').read()\nexec(compile(src, 'v.py', 'exec'))\n",
+        # 디코딩 함수가 있어도 그 결과를 실행하지 않는다
+        "import base64\ndef token(s):\n    return base64.b64decode(s)\nprint(token(P))\n",
+        # 이름이 join 이어도 chr 조립이 아니다
+        "eval(', '.join(names))\n",
+    ],
+)
+def test_ordinary_exec_and_decoding_stay_quiet(tmp_path, src):
+    (tmp_path / "mod.py").write_text(src, encoding="utf-8")
+    assert RULE_OBFUSCATED not in {
+        f.rule for f in analyze_path(tmp_path) if f.severity is Severity.HIGH
+    }
+
+
+def test_oversized_setup_py_is_still_scanned():
+    """실측: libida — 2MB 를 넘긴 setup.py 가 크기 상한 때문에 검사에서 통째로 빠졌다."""
+    pad = "#" + "x" * (3 * 1024 * 1024) + "\n"
+    src = "from base64 import b64decode\nexec(b64decode(P).decode())\n" + pad
+    assert RULE_OBFUSCATED in _high_rules({"p-1/setup.py": src})
+    # 진입점이 아닌 큰 모듈은 예전처럼 건너뛴다 (생성된 표·데이터)
+    assert _high_rules({"p-1/pkg/table.py": src}) == set()

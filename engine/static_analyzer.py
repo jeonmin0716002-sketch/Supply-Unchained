@@ -27,6 +27,13 @@ from engine.rules.base import DiskTree, MemoryTree, SourceTree
 #: Files larger than this are skipped — packaged data blobs, not source.
 MAX_FILE_BYTES = 2 * 1024 * 1024
 
+#: 설치·import 진입점은 크기와 무관하게 읽는다 (메모리 보호용 상한만 둔다). 진입점까지
+#: 2MB 에서 잘랐더니, 페이로드를 통째로 박아 2MB 를 넘긴 악성 setup.py 가 **아예 검사
+#: 대상에서 빠졌다** (실측: libida — base64 페이로드 → exec). 크기를 부풀리기만 하면 되는
+#: 우회로다. 그 밖의 큰 .py 는 생성된 표·데이터라 예전처럼 건너뛴다.
+ENTRYPOINT_NAMES = frozenset({"setup.py", "__init__.py"})
+MAX_ENTRYPOINT_BYTES = 20 * 1024 * 1024
+
 #: Directory names that never contain package code worth scanning.
 SKIP_DIRS = frozenset({".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "node_modules"})
 
@@ -73,7 +80,9 @@ def _candidates(tree: SourceTree) -> list[str]:
             continue
         if PurePosixPath(rel).suffix.lower() not in TEXT_SUFFIXES:
             continue
-        if not 0 <= tree.size(rel) <= MAX_FILE_BYTES:
+        name = PurePosixPath(rel).name
+        entry = name in ENTRYPOINT_NAMES or name.endswith(".pth")
+        if not 0 <= tree.size(rel) <= (MAX_ENTRYPOINT_BYTES if entry else MAX_FILE_BYTES):
             continue
         out.append(rel)
     return out
