@@ -796,6 +796,12 @@ def test_ordinary_eval_and_join_stay_quiet(tmp_path, src):
         # rutis — __main__.py 는 python -m 으로 실행할 때만 돈다
         {"p-1/setup.py": "", "p-1/pkg/__init__.py": "",
          "p-1/pkg/__main__.py": "import socket\nsocket.create_connection(('x', 80))\n"},
+        # rapid-mlx — 패키지에 딸린 통합 테스트가 최상단에서 로컬 서버에 묻는다
+        {"p-1/setup.py": "", "p-1/pkg/__init__.py": "",
+         "p-1/pkg/_integration_tests/__init__.py": "",
+         "p-1/pkg/_integration_tests/test_sdk.py": "import httpx\nhttpx.get('http://localhost')\n"},
+        {"p-1/setup.py": "", "p-1/pkg/__init__.py": "",
+         "p-1/pkg/conftest.py": "import httpx\nhttpx.get('http://localhost')\n"},
     ],
 )
 def test_watcher_observed_benign_patterns_are_not_high(files):

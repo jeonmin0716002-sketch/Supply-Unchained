@@ -295,6 +295,14 @@ def _is_install_script(ctx: FileContext) -> bool:
     )
 
 
+def _is_test_file(rel: PurePosixPath) -> bool:
+    """패키지에 딸려 배포된 테스트. 실측 오탐: rapid-mlx 의 ``_integration_tests/test_*.py`` 가
+    최상단에서 로컬 서버(localhost)에 모델 목록을 묻는다. 테스트는 pytest 로 돌릴 때만 실행된다."""
+    if rel.name == "conftest.py" or rel.name.startswith("test_") or rel.stem.endswith("_test"):
+        return True
+    return any(part in ("test", "tests") or part.endswith("_tests") for part in rel.parts[:-1])
+
+
 def _is_package_module(ctx: FileContext) -> bool:
     """누군가 import 할 코드인가 — 패키지 디렉터리(__init__.py 있음) 안이거나 sdist 최상위
     단일 모듈. ``scripts/``·``tools/``·``other/`` 의 보조 스크립트는 import 되지 않는다
@@ -302,6 +310,8 @@ def _is_package_module(ctx: FileContext) -> bool:
     rel = PurePosixPath(ctx.relpath)
     if rel.name == "__main__.py":
         return False  # python -m 으로 직접 실행할 때만 돈다 (실측 오탐: rutis)
+    if _is_test_file(rel):
+        return False  # pytest 가 모으는 파일 — 사용자 코드가 import 하지 않는다
     if rel.name == "__init__.py":
         return True
     if ctx.tree is not None and ctx.tree.read((rel.parent / "__init__.py").as_posix()) is not None:
