@@ -181,14 +181,35 @@ def _qualified(node: ast.AST, aliases: dict[str, str]) -> str | None:
 
 
 def _is_chr_join(call: ast.Call, aliases: dict[str, str]) -> bool:
-    """``''.join(chr(c) for c in [...])`` — 문자 코드로 소스를 조립한다 (실측: colors-update 등)."""
+    """``''.join(chr(c) for c in [...])`` · ``''.join(map(chr, [...]))`` — 문자 코드로 소스를
+    조립한다 (실측: colors-update 등, map 변형은 pyfastdownload·pyobfexecute)."""
     name = _call_name(call.func) or ""
     if not name.endswith(".join"):
         return False
+    # chr 를 부르든(chr(c)) 함수 값으로 넘기든(map(chr, ...)) chr 가 쓰이면 조립이다
     return any(
-        isinstance(n, ast.Call) and _qualified(n.func, aliases) in ("chr", "builtins.chr")
+        isinstance(n, (ast.Name, ast.Attribute))
+        and _qualified(n, aliases) in ("chr", "builtins.chr")
         for n in ast.walk(call)
     )
+
+
+#: 실행 함수를 **문자열에서 꺼내는** 것 — ``_____ = eval("eval")`` 처럼 이름을 숨긴 뒤 밑줄
+#: 식별자로 부른다. 코드에 exec/eval 이름이 안 남아 다른 규칙이 못 본다. 정상 코드가 실행
+#: 함수를 굳이 문자열로 꺼낼 이유가 없다 (실측: held-out 놓친 13개 — robloxlogger 계열).
+_SINK_NAMES = {"exec", "eval", "compile", "__import__"}
+
+
+def _fetches_sink_by_name(call: ast.Call, aliases: dict[str, str]) -> str | None:
+    name = _qualified(call.func, aliases)
+    if name not in ("eval", "exec", "builtins.eval", "builtins.exec") or len(call.args) != 1:
+        return None
+    arg = call.args[0]
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        value = arg.value.strip()
+        if value in _SINK_NAMES:
+            return value
+    return None
 
 
 class _DecoderIndex:
@@ -260,6 +281,18 @@ def obfuscated_payload(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFin
     index = _DecoderIndex(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
+            continue
+
+        hidden = _fetches_sink_by_name(node, index.aliases)
+        if hidden:
+            yield make_finding(
+                rule=RULE_OBFUSCATED,
+                cwe="CWE-506",
+                severity=Severity.HIGH,
+                ctx=ctx,
+                line=node.lineno,
+                detail=f"실행 함수 {hidden}() 를 문자열에서 꺼냄 — 이름을 숨긴 실행, 난독화의 전형",
+            )
             continue
 
         sink = _qualified(node.func, index.aliases)

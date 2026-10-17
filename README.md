@@ -35,7 +35,7 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 | CI 2종 (테스트 + 공급망 스캔 게이트) | 동작 |
 | 컨테이너 이미지 배포 (GHCR, `docker-publish.yml`) | 동작 |
 | PyPI 감시기 — 신규 업로드 자동 스캔 + 검토 큐 (`watcher/`, `su_scan watch`) | 동작 |
-| 실측 평가 — 실제 악성 300개 탐지율 77.0% · 탈취 패키지 29개 62% · 정상 상위 300개 오탐률 0.7% (`tools/eval_*.py`) | 동작 |
+| 실측 평가 — 처음 보는 실제 악성 300개 탐지율 80.7% · 탈취 패키지 29개 62% · 정상 상위 300개 오탐률 0.7% (`tools/eval_*.py`) | 동작 |
 
 임계값·규칙셋은 검증 샘플로 계속 튜닝 중입니다.
 
@@ -293,14 +293,16 @@ uv run python -m cli.su_scan check-file requirements.txt   # block 있으면 exi
 
 | 지표 | 데이터 | 결과 |
 |---|---|---|
-| 탐지율 — 악성 목적 패키지 (**held-out**) | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중, 규칙 튜닝에 쓴 300개를 **뺀** 무작위 300개 (패키지당 1버전, seed 7) | **80.7%** (242/300, 95% CI 75.8–84.7%) |
-| 탐지율 — 악성 목적 패키지 (튜닝 세트) | 같은 데이터셋 무작위 300개 (seed 42) — 놓친 샘플을 보고 규칙을 고친 세트라 참고용 | 77.0% (231/300) |
+| 탐지율 — 악성 목적 패키지 (**최종, 처음 보는 세트**) | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중, 앞의 두 세트 600개를 **뺀** 무작위 300개 (패키지당 1버전, seed 99) | **80.7%** (242/300, 95% CI 75.8–84.7%) |
+| 탐지율 — held-out (seed 7) | 튜닝 세트 300개를 뺀 무작위 300개. 규칙을 고정한 채 잰 값 (이후 이 세트에서 놓친 두 계열로 규칙을 더해 참고용이 됨) | 80.7% (242/300) |
+| 탐지율 — 튜닝 세트 (seed 42) | 놓친 샘플을 보고 규칙을 고친 세트 — 참고용 | 77.0% (231/300) |
 | 탐지율 — 탈취된 정상 패키지 | 같은 데이터셋 `compromised_lib` 전체 (17개 패키지, 29개 버전 — ultralytics·litellm·mistralai·telnyx 등 실제 사고) | **62%** (18/29) |
 | 오탐률 (차단) | PyPI 다운로드 상위 300개 최신 버전 ([top-pypi-packages](https://hugovk.github.io/top-pypi-packages/)) | **0.7%** (2/289, 11개는 다운로드 오류) |
 
 ```bash
 uv run python tools/eval_malware_dataset.py --n 300 --seed 42 --out tuned.json      # 튜닝 세트
-uv run python tools/eval_malware_dataset.py --n 300 --seed 7 --exclude-from tuned.json  # held-out
+uv run python tools/eval_malware_dataset.py --n 300 --seed 7 --exclude-from tuned.json --out holdout.json  # held-out
+uv run python tools/eval_malware_dataset.py --n 300 --seed 99 --exclude-from tuned.json --exclude-from holdout.json  # 최종
 uv run python tools/eval_malware_dataset.py --kind compromised_lib --all-versions  # 탈취
 uv run python tools/eval_benign_top.py --n 300                                 # 오탐률
 ```
@@ -315,6 +317,13 @@ uv run python tools/eval_benign_top.py --n 300                                 #
 조립하는 계열. 이 데이터셋에는 거의 같은 패키지를 대량으로 찍어낸 캠페인이 섞여 있어서,
 패키지당 1버전으로 뽑아도 캠페인 하나를 잡느냐 놓치느냐에 수치가 크게 흔들린다. 위 수치는
 캠페인 크기만큼 가중된 값으로 읽어야 한다.
+
+이 두 계열을 잡는 규칙을 더했다 — 실행 함수를 문자열에서 꺼내는 `eval("eval")`·`eval("exec")`
+(held-out 에서 놓친 13개가 전부 이 형태였다), 그리고 `map(chr, ...)` 조립. held-out 세트에서
+80.7% → 86% (2022년 38% → 69%)가 됐지만 그 세트를 보고 만든 규칙이라 참고용이다. 그래서
+규칙을 다시 고정하고 **앞의 두 세트 600개를 모두 뺀 세 번째 세트**로 쟀다 — 80.7%
+(2022 56% · 2023 86% · 2024 93% · 2025 55% · 2026 76%; 2025·2026 은 표본이 20·17개라 흔들림이
+크다). 정상 상위 300개 오탐률은 0.7% 그대로다.
 
 탈취 패키지는 수천 줄짜리 정상 라이브러리라, "끼워 넣은 코드를 잡은 것인지"를 따로 확인했다.
 각 패키지의 **직전 정상 버전**을 같은 엔진으로 돌리면 16개 중 15개가 탐지 없음이었다. 예외는

@@ -733,3 +733,37 @@ def test_oversized_setup_py_is_still_scanned():
     assert RULE_OBFUSCATED in _high_rules({"p-1/setup.py": src})
     # 진입점이 아닌 큰 모듈은 예전처럼 건너뛴다 (생성된 표·데이터)
     assert _high_rules({"p-1/pkg/table.py": src}) == set()
+
+
+# ── held-out 에서 놓친 두 계열 ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # robloxlogger 계열 — 실행 함수를 문자열에서 꺼내 밑줄 이름으로 숨김
+        "_____ = eval('eval')\n_____(payload)\n",
+        "import builtins\n___ = builtins.eval('exec')\n",
+        # pyfastdownload 계열 — map(chr, ...) 로 소스 조립
+        "exec(''.join(map(chr, [112, 114, 105, 110, 116])))\n",
+    ],
+)
+def test_hidden_sink_and_map_chr_are_high(tmp_path, src):
+    (tmp_path / "mod.py").write_text(src, encoding="utf-8")
+    obf = [f for f in analyze_path(tmp_path) if f.rule == RULE_OBFUSCATED]
+    assert obf and obf[0].severity is Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "x = eval('1 + 1')\n",               # 평범한 식 평가 — 실행 함수를 꺼내는 게 아니다
+        "names = ''.join(map(str, ids))\n",  # map 이어도 chr 가 아니다
+        "exec_ = getattr(builtins, 'exec')\n",  # six 의 호환 관용구 — 문자열 eval 이 아니다
+    ],
+)
+def test_ordinary_eval_and_join_stay_quiet(tmp_path, src):
+    (tmp_path / "mod.py").write_text(src, encoding="utf-8")
+    assert RULE_OBFUSCATED not in {
+        f.rule for f in analyze_path(tmp_path) if f.severity is Severity.HIGH
+    }
