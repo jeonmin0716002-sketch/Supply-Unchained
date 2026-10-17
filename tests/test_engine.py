@@ -606,6 +606,9 @@ from engine.static_analyzer import analyze_files  # noqa: E402
 
 
 def _high_rules(files: dict[str, str]) -> set[str]:
+    # 진짜 sdist 처럼 — 루트에 늘 PKG-INFO 가 있다 (설치 스크립트 판별 근거)
+    roots = {k.split("/")[0] for k in files if k.endswith("/setup.py")}
+    files = {**{f"{r}/PKG-INFO": "Name: p" for r in roots}, **files}
     return {f.rule for f in analyze_files(files) if f.severity is Severity.HIGH}
 
 
@@ -767,3 +770,43 @@ def test_ordinary_eval_and_join_stay_quiet(tmp_path, src):
     assert RULE_OBFUSCATED not in {
         f.rule for f in analyze_path(tmp_path) if f.severity is Severity.HIGH
     }
+
+
+# ── 감시기 실측 오탐 (2026-10-17, 새 규칙으로 신규 업로드 1,900여 건) ──────
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # rpi-hwid — and 로 덧붙인 main 가드 안
+        {"p-1/setup.py": "", "p-1/pkg/__init__.py": "",
+         "p-1/pkg/fpga.py": "import requests\ndef main():\n    requests.get('http://x')\n"
+                            "if __name__ == '__main__' and not globals().get('E'):\n    main()\n"},
+        # fd-open-data-mcp — 함수 안에 정의된 웹 핸들러는 요청이 올 때 돈다
+        {"p-1/setup.py": "", "p-1/pkg/__init__.py": "",
+         "p-1/pkg/app.py": "from urllib.request import urlopen\n"
+                           "def _proxy(u):\n    return urlopen(u)\n"
+                           "def create_app():\n    def handler():\n        return _proxy('http://x')\n"
+                           "    return handler\napp = create_app()\n"},
+        # pigeon-home-runner — 패키지 안의 setup.py 라는 이름의 일반 모듈(설정 마법사)
+        {"p-1/setup.py": "", "p-1/runner/__init__.py": "",
+         "p-1/runner/setup.py": "from oauth import refresh\ndef wizard():\n    refresh()\n",
+         "p-1/runner/oauth.py": "from urllib.request import urlopen\n"
+                                "def refresh():\n    return urlopen('https://oauth')\n"},
+        # rutis — __main__.py 는 python -m 으로 실행할 때만 돈다
+        {"p-1/setup.py": "", "p-1/pkg/__init__.py": "",
+         "p-1/pkg/__main__.py": "import socket\nsocket.create_connection(('x', 80))\n"},
+    ],
+)
+def test_watcher_observed_benign_patterns_are_not_high(files):
+    assert RULE_INSTALL_TIME not in _high_rules(files)
+
+
+def test_local_module_finding_points_at_the_module_not_setup_py():
+    files = {
+        "p-1/PKG-INFO": "Name: p",
+        "p-1/setup.py": "from helper import go\ngo()\n",
+        "p-1/helper.py": "import requests\ndef go():\n    requests.post('http://x', data='h')\n",
+    }
+    [f] = [f for f in analyze_files(files) if f.rule == RULE_INSTALL_TIME]
+    assert f.location == "p-1/helper.py:3"

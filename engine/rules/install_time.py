@@ -143,10 +143,15 @@ def _walk_executed(node: ast.AST) -> Iterator[ast.AST]:
 
 
 def _is_main_guard(stmt: ast.stmt) -> bool:
-    if not isinstance(stmt, ast.If) or not isinstance(stmt.test, ast.Compare):
+    """``if __name__ == "__main__":`` — ``and`` 로 조건을 덧붙인 형태도 (실측 오탐: rpi-hwid 의
+    ``if __name__ == "__main__" and not globals().get(...)``)."""
+    if not isinstance(stmt, ast.If):
         return False
-    parts = [stmt.test.left, *stmt.test.comparators]
-    return any(isinstance(p, ast.Name) and p.id == "__name__" for p in parts)
+    return any(
+        isinstance(n, ast.Compare)
+        and any(isinstance(p, ast.Name) and p.id == "__name__" for p in [n.left, *n.comparators])
+        for n in ast.walk(stmt.test)
+    )
 
 
 def _module_level(tree: ast.Module, *, include_main: bool) -> Iterator[ast.AST]:
@@ -176,7 +181,11 @@ def _follow_local_calls(nodes: list[ast.AST], tree: ast.Module) -> list[ast.AST]
         if fn is None or fn.name in done:
             continue
         done.add(fn.name)
-        body = [n for stmt in fn.body for n in _walk_executed(stmt)]
+        # 함수 안에 정의된 함수(웹 핸들러 등)는 그 함수를 부를 때가 아니라 요청이 올 때 돈다
+        # (실측 오탐: fd-open-data-mcp — create_app() 안 라우트 핸들러의 urlopen)
+        body = [
+            n for stmt in fn.body if not isinstance(stmt, _DEFS) for n in _walk_executed(stmt)
+        ]
         out.extend(body)
         todo.extend(body)
     return out
@@ -198,7 +207,7 @@ def _hook_classes(tree: ast.Module) -> list[ast.ClassDef]:
 
 def _local_module_scopes(
     nodes: list[ast.AST], aliases: dict[str, str], ctx: FileContext
-) -> list[tuple[str, list[ast.AST], dict[str, str]]]:
+) -> list[tuple[str, list[ast.AST], dict[str, str]]]:  # (relpath, 범위, 별칭)
     """setup.py 의 실행 범위가 import 해서 **실제로 부르는** 로컬 모듈 코드.
 
     모듈 파일 전체가 아니라 (1) 그 모듈의 최상단(import 순간 실행)과 (2) setup.py 가 부른
@@ -234,8 +243,11 @@ def _local_module_scopes(
             scope = list(_module_level(sub, include_main=False))
             for name, fn in funcs.items():
                 if f"{mod}.{name}" in called:
-                    scope.extend(n for stmt in fn.body for n in _walk_executed(stmt))
-            out.append((cand.name, _follow_local_calls(scope, sub), _aliases(sub)))
+                    scope.extend(
+                        n for stmt in fn.body if not isinstance(stmt, _DEFS)
+                        for n in _walk_executed(stmt)
+                    )
+            out.append((cand.as_posix(), _follow_local_calls(scope, sub), _aliases(sub)))
             break
     return out
 
@@ -268,11 +280,28 @@ def _check(nodes: Iterable[ast.AST], ctx: FileContext, when: str, aliases: dict[
         )
 
 
+def _is_install_script(ctx: FileContext) -> bool:
+    """sdist 최상위의 진짜 설치 스크립트인가. 패키지 안에 ``setup.py`` 라는 이름의 일반 모듈이
+    있을 수 있다 (실측 오탐: pigeon-home-runner 의 ``runner/setup.py`` — 설정 마법사). sdist
+    루트에는 PKG-INFO 가 늘 있고, 빌드 설정 파일이 옆에 있다."""
+    if ctx.name != "setup.py":
+        return False
+    if ctx.tree is None:
+        return True
+    base = PurePosixPath(ctx.relpath).parent
+    return any(
+        ctx.tree.read((base / marker).as_posix()) is not None
+        for marker in ("PKG-INFO", "setup.cfg", "pyproject.toml")
+    )
+
+
 def _is_package_module(ctx: FileContext) -> bool:
     """누군가 import 할 코드인가 — 패키지 디렉터리(__init__.py 있음) 안이거나 sdist 최상위
     단일 모듈. ``scripts/``·``tools/``·``other/`` 의 보조 스크립트는 import 되지 않는다
     (정상 상위 300개 실측 오탐: fastapi·black·pyzmq·defusedxml·pyasn1-modules)."""
     rel = PurePosixPath(ctx.relpath)
+    if rel.name == "__main__.py":
+        return False  # python -m 으로 직접 실행할 때만 돈다 (실측 오탐: rutis)
     if rel.name == "__init__.py":
         return True
     if ctx.tree is not None and ctx.tree.read((rel.parent / "__init__.py").as_posix()) is not None:
@@ -283,15 +312,18 @@ def _is_package_module(ctx: FileContext) -> bool:
 
 def install_time_exec(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding]:
     aliases = _aliases(tree)
-    if ctx.name == "setup.py":
+    if _is_install_script(ctx):
         top = _follow_local_calls(list(_module_level(tree, include_main=True)), tree)
         hooks = _follow_local_calls([n for c in _hook_classes(tree) for n in ast.walk(c)], tree)
         yield from _check(top, ctx, "pip install 시 setup.py 가 실행하는", aliases)
         yield from _check(hooks, ctx, "pip install 시 설치 훅이 실행하는", aliases)
         # 훅·최상단이 불러 실행하는 패키지 안 모듈은 파일 전체가 설치 시점 코드다
-        for fname, scope, sub_aliases in _local_module_scopes(top + hooks, aliases, ctx):
+        for relpath, scope, sub_aliases in _local_module_scopes(top + hooks, aliases, ctx):
+            # 위치는 실제 코드가 있는 모듈로 보고한다 (setup.py 줄번호로 붙이면 엉뚱한 줄)
+            mod_ctx = FileContext(path=ctx.path.parent / PurePosixPath(relpath).name,
+                                  relpath=relpath, text="", tree=ctx.tree)
             when = "pip install 시 setup.py 가 불러 실행하는"
-            yield from _check(scope, ctx, when, sub_aliases, origin=f" (in {fname})")
+            yield from _check(scope, mod_ctx, when, sub_aliases)
         return
     if not _is_package_module(ctx):
         return
