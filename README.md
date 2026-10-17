@@ -293,15 +293,28 @@ uv run python -m cli.su_scan check-file requirements.txt   # block 있으면 exi
 
 | 지표 | 데이터 | 결과 |
 |---|---|---|
-| 탐지율 — 악성 목적 패키지 | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중 무작위 300개 (패키지당 1버전, seed 42) | **77.0%** (231/300) |
+| 탐지율 — 악성 목적 패키지 (**held-out**) | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중, 규칙 튜닝에 쓴 300개를 **뺀** 무작위 300개 (패키지당 1버전, seed 7) | **80.7%** (242/300, 95% CI 75.8–84.7%) |
+| 탐지율 — 악성 목적 패키지 (튜닝 세트) | 같은 데이터셋 무작위 300개 (seed 42) — 놓친 샘플을 보고 규칙을 고친 세트라 참고용 | 77.0% (231/300) |
 | 탐지율 — 탈취된 정상 패키지 | 같은 데이터셋 `compromised_lib` 전체 (17개 패키지, 29개 버전 — ultralytics·litellm·mistralai·telnyx 등 실제 사고) | **62%** (18/29) |
 | 오탐률 (차단) | PyPI 다운로드 상위 300개 최신 버전 ([top-pypi-packages](https://hugovk.github.io/top-pypi-packages/)) | **0.7%** (2/289, 11개는 다운로드 오류) |
 
 ```bash
-uv run python tools/eval_malware_dataset.py --n 300 --seed 42                  # 악성 목적
+uv run python tools/eval_malware_dataset.py --n 300 --seed 42 --out tuned.json      # 튜닝 세트
+uv run python tools/eval_malware_dataset.py --n 300 --seed 7 --exclude-from tuned.json  # held-out
 uv run python tools/eval_malware_dataset.py --kind compromised_lib --all-versions  # 탈취
 uv run python tools/eval_benign_top.py --n 300                                 # 오탐률
 ```
+
+**held-out 이 실제 탐지율이다.** 튜닝 세트로 잰 수치는 시험 문제를 보고 공부한 뒤 같은 시험을
+본 셈이라 낙관적이다. 그래서 규칙을 고정하고 튜닝에 쓴 패키지를 뺀 새 300개로 다시 쟀다 — 겹침 0개.
+오히려 높게(80.7%) 나와, 규칙이 튜닝 세트에 과적합되지 않았다.
+
+발견 연도별로는 차이가 크다: 2022년 38% (16/42) · 2023년 86% · 2024년 92% · 2025년 88% ·
+2026년 86%. 2022년의 낮은 수치는 주로 두 캠페인 때문이다 — 식별자를 전부 밑줄로 바꾸고
+`eval("exec")` 로 실행 함수를 문자열에서 꺼내는 계열, 그리고 `map(chr, [...])` 로 소스를
+조립하는 계열. 이 데이터셋에는 거의 같은 패키지를 대량으로 찍어낸 캠페인이 섞여 있어서,
+패키지당 1버전으로 뽑아도 캠페인 하나를 잡느냐 놓치느냐에 수치가 크게 흔들린다. 위 수치는
+캠페인 크기만큼 가중된 값으로 읽어야 한다.
 
 탈취 패키지는 수천 줄짜리 정상 라이브러리라, "끼워 넣은 코드를 잡은 것인지"를 따로 확인했다.
 각 패키지의 **직전 정상 버전**을 같은 엔진으로 돌리면 16개 중 15개가 탐지 없음이었다. 예외는

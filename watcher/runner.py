@@ -63,15 +63,31 @@ def _lookalike_new_project(record: dict) -> bool:
     )
 
 
+def _blocked_by_antivirus(record: dict) -> bool:
+    """정적분석이 백신에 막혀 파일을 못 읽었다 — Windows Defender 는 실제 악성 파일의 읽기를
+    막는다(OSError 22, 실측: DataDog 악성 샘플). 그 자체가 강한 신호인데, 그 파일을 못 봤으니
+    판정은 safe 로 나올 수 있다. 큐에 안 올리면 백신이 잡은 걸 감시기가 놓친다."""
+    return any("백신" in e for e in record.get("layer_errors", ()) if e.startswith("static:"))
+
+
 def is_suspicious(record: dict) -> bool:
-    return record["verdict"] == "block" or _lookalike_new_project(record)
+    return (
+        record["verdict"] == "block"
+        or _lookalike_new_project(record)
+        or _blocked_by_antivirus(record)
+    )
 
 
 def signature(record: dict) -> tuple:
     """"같은 이유로 걸렸다"의 기준 — 판정, 고위험 규칙 목록, 이름 사칭 여부."""
     findings = record.get("static_findings", ())
     high_rules = sorted({f["rule"] for f in findings if f["severity"] in ("high", "critical")})
-    return record["verdict"], tuple(high_rules), _lookalike_new_project(record)
+    return (
+        record["verdict"],
+        tuple(high_rules),
+        _lookalike_new_project(record),
+        _blocked_by_antivirus(record),
+    )
 
 
 async def resolve_latest(name: str, http: httpx.AsyncClient) -> str:

@@ -445,7 +445,10 @@ def _render_cycle(report) -> None:
     for r in report.flagged:
         _label, color = _style(r["verdict"])
         reasons = "; ".join(r["verdict_reasons"])
-        if r["verdict"] != "block":
+        av = [e for e in r.get("layer_errors", ()) if "백신" in e]
+        if av:
+            reasons = f"백신이 파일 읽기를 차단 — {av[0]} · {reasons}"
+        elif r["verdict"] != "block":
             # block 이 아닌데 큐에 왔다면 이름 유사도 때문이다 — 판정 사유만 보면 이유를 모른다
             typo = (r.get("risk_signals") or {}).get("typosquat_score")
             reasons = f"인기 패키지와 이름 유사도 {typo} · {reasons}"

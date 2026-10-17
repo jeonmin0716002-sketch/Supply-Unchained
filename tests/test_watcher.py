@@ -122,6 +122,17 @@ def test_is_suspicious_ignores_cve_only_and_new_package_baseline():
     assert not is_suspicious(_record("sh-agent", "0.2.0", "warn", 40, typo=0.53))
 
 
+def test_antivirus_blocked_read_is_suspicious_even_if_safe():
+    rec = _record("evilpkg", "1.0", "safe", 5, new=False)
+    rec["layer_errors"] = [
+        "static: 파일 1개를 읽지 못해 검사하지 못함 — 백신이 차단했을 수 있음 (x/setup.py)"
+    ]
+    assert is_suspicious(rec)
+    # 백신과 무관한 레이어 오류(OSV 조회 실패 등)는 큐 사유가 아니다
+    rec["layer_errors"] = ["cve: OSV lookup failed"]
+    assert not is_suspicious(rec)
+
+
 def test_lookalike_name_only_counts_for_new_projects():
     # 실측 — oauth2-lib(2021년부터 55개 릴리스)가 oauthlib 와 0.89 로 걸렸다
     assert not is_suspicious(_record("oauth2-lib", "3.1.0", "safe", 26, typo=0.89, new=False))
