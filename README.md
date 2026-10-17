@@ -393,6 +393,20 @@ uv run python -m cli.su_scan watch --once     # 한 주기만
 * 악성으로 확인되면 PyPI 에 신고하고 [OpenSSF malicious-packages](https://github.com/ossf/malicious-packages)
   에 등록합니다(등록되면 OSV 에 `MAL-` ID 로 공개되어 다른 도구들도 차단에 씁니다).
 
+* **PyPI 가 먼저 지운 패키지도 기록합니다.** 피드에 보였는데 스캔하려는 시점에 이미 사라진
+  새 패키지는 거의 PyPI 의 악성 차단입니다. 큐에 "삭제됨" 으로 남겨, 엔진이 봤든 못 봤든 사후
+  정답으로 씁니다.
+
+```bash
+uv run python -m cli.su_scan crosscheck     # OpenSSF 신고 악성과 감시 결과 대조
+```
+
+`crosscheck` 는 감시 기간에 [OpenSSF malicious-packages](https://github.com/ossf/malicious-packages)
+에 신고된 PyPI 악성 패키지마다 **잡음 · 삭제 감지 · 놓침(스캔했지만 큐에 안 올림) · 못 봄** 을
+표시합니다. 데이터셋 평가가 과거 샘플로 엔진을 재는 것이라면, 이건 실제로 올라온 악성으로
+감시기 전체를 잽니다. 아직 PyPI 에 남은 패키지는 실제 업로드 시각으로, 지워진 패키지는 최초
+탐지 시각으로 감시 기간 여부를 가립니다.
+
 API 서버와는 별도 프로세스로 돌고 같은 SQLite(`SU_DB_PATH`)만 공유합니다. 하루 종일
 외부 업로드를 받아 푸는 작업을 pip 프록시와 같은 수명에 묶지 않기 위해서입니다.
 

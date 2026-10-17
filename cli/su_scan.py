@@ -29,7 +29,7 @@ import re
 import subprocess
 import sys
 import warnings
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 
 import httpx
@@ -434,9 +434,14 @@ def _render_cycle(report) -> None:
         f"[dim]{stamp}[/dim] 피드 {report.fetched} · 스캔 {report.scanned} · "
         f"[red]의심 {len(report.flagged)}[/red] · 실패 {len(report.failed)}"
         + (f" · 다음 주기로 {report.deferred}" if report.deferred else "")
+        + (f" · [magenta]삭제 {len(report.removed)}[/magenta]" if report.removed else "")
     )
     for err in report.feed_errors:
         console.print(f"  [yellow]피드 조회 실패[/yellow] {escape(err)}")
+    for name in report.removed:
+        console.print(
+            f"  [magenta]PyPI 에서 삭제됨[/magenta] {escape(name)} — 스캔 전에 사라짐 (큐에 기록)"
+        )
     for spec, why in report.failed:
         # 실패한 릴리스는 seen 으로 표시되지 않아 다음 주기에 재시도된다
         console.print(
@@ -457,6 +462,49 @@ def _render_cycle(report) -> None:
             f"  [{color}]{r['verdict'].upper()}[/{color}] {pkg} "
             f"(위험도 {r['risk_score']}) — {escape(reasons)}"
         )
+
+
+@app.command()
+def crosscheck(
+    since: str = typer.Option(
+        None, help="이 시각(UTC, 예: 2026-10-17T08:00) 이후 탐지된 것만. 비우면 감시 시작 시각"
+    ),
+) -> None:
+    """OpenSSF 악성 패키지 DB 와 감시 결과를 맞춰 실제 운영 탐지율을 본다.
+
+    감시 기간에 신고된 PyPI 악성 패키지마다: 잡았나(큐) · 삭제를 감지했나 · 스캔했는데
+    놓쳤나 · 아예 못 봤나. 데이터셋 평가와 달리 실제로 올라온 악성으로 잰다.
+    """
+    from api.storage import db_path
+    from watcher.crosscheck import crosscheck as run_crosscheck
+    from watcher.crosscheck import watcher_start
+
+    start = (
+        datetime.fromisoformat(since).replace(tzinfo=UTC) if since else watcher_start(db_path())
+    )
+    if start is None:
+        console.print("[red]감시 기록이 없습니다.[/red] 먼저 watch 를 돌리세요.")
+        raise typer.Exit(code=2)
+    reports = _run_local(run_crosscheck(db_path(), start))
+
+    t = Table(title=f"OpenSSF 신고 PyPI 악성 (감시 시작 {start:%m-%d %H:%M} UTC 이후)",
+              title_justify="left")
+    for col in ("올라온 시각 (근거)", "패키지", "결과", "근거"):
+        t.add_column(col)
+    style = {"caught": "green", "removed": "magenta", "missed": "red", "unseen": "yellow"}
+    label = {"caught": "잡음", "removed": "삭제 감지", "missed": "놓침", "unseen": "못 봄"}
+    for r in reports:
+        c = style[r.status]
+        t.add_row(r.detected_at.replace("T", " "), escape(r.name),
+                  f"[{c}]{label[r.status]}[/{c}]", escape(r.detail))
+    console.print(t)
+    n = len(reports)
+    seen = sum(r.status != "unseen" for r in reports)
+    hit = sum(r.status in ("caught", "removed") for r in reports)
+    console.print(
+        f"신고 {n}건 · 감시기가 본 것 {seen}건 · 잡거나 삭제를 감지 {hit}건"
+        + (f" (본 것 중 {hit / seen:.0%})" if seen else "")
+    )
 
 
 # ──────────────────────────────

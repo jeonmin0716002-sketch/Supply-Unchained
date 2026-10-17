@@ -35,7 +35,7 @@ import httpx
 
 from api.schemas import ScanRequest
 from api.storage import ScanStore
-from common.pypi import PyPIError, fetch_project
+from common.pypi import PackageNotFound, PyPIError, fetch_project
 from scoring.features import TYPOSQUAT_MIN_RATIO
 from watcher.feed import fetch_feeds
 
@@ -54,6 +54,16 @@ class CycleReport:
     failed: list[tuple[str, str]] = field(default_factory=list)  # (spec, 사유)
     skipped_invalid: list[str] = field(default_factory=list)     # 이름/버전 검증 실패
     feed_errors: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)    # 스캔 전에 PyPI 에서 사라진 패키지
+
+
+#: 감시 큐에 "PyPI 에서 삭제됨" 을 남길 때 쓰는 seen 표시 버전 — 다음 주기에 다시 조회하지 않게
+REMOVED_MARK = "(removed)"
+
+
+def _removed_from_pypi(record: dict) -> bool:
+    """스캔 시점에 이미 PyPI 에 없던 릴리스 (common.pypi.PackageNotFound 메시지)."""
+    return any("not on PyPI" in e for e in record.get("layer_errors", ()))
 
 
 def _lookalike_new_project(record: dict) -> bool:
@@ -122,10 +132,21 @@ async def run_cycle(
     known = await store.seen_names([n for n, v in items if v is None])
     sem = asyncio.Semaphore(concurrency)
 
+    async def _removed(name: str, version: str) -> None:
+        """피드에 보였는데 스캔 전에 PyPI 가 지운 패키지. 새 업로드가 몇 분 만에 사라지는 건
+        거의 PyPI 의 악성 차단이다 — 우리 엔진이 봤든 못 봤든 놓치면 안 되는 사후 정답이다
+        (실측: OpenSSF 신고 marocolor 는 감시 중 탐지됐는데 우리 기록에 흔적이 없었다)."""
+        if await store.enqueue_removed(name, version, _now()):
+            report.removed.append(name)
+
     async def _resolve(name: str) -> tuple[str, str] | None:
         async with sem:
             try:
                 return name, await resolve(name, http)
+            except PackageNotFound:
+                await store.mark_seen(name, REMOVED_MARK, _now())
+                await _removed(name, "?")
+                return None
             except (PyPIError, httpx.HTTPError) as exc:
                 report.failed.append((name, f"최신 버전 조회 실패: {exc}"))
                 return None
@@ -161,6 +182,9 @@ async def run_cycle(
         record = result.model_dump(mode="json")
         await store.mark_seen(req.name, req.version, _now())
         report.scanned += 1
+        if _removed_from_pypi(record):
+            await _removed(req.name, req.version)
+            return
         if is_suspicious(record):
             seen_before = await store.queued_records(req.name)
             if any(signature(r) == signature(record) for r in seen_before):

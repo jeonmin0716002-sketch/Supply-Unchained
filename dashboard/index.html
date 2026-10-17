@@ -112,6 +112,7 @@
   .q-links a{font-size:12px;margin-right:8px}
   .st{font-family:var(--mono);font-size:12px;color:var(--muted)}
   #queue .dot{display:inline-block;margin-top:6px}
+  .d-removed{background:#B48CF2}
 
 </style>
 </head>
@@ -421,7 +422,7 @@ async function loadQueue(){
         <td><span class="dot d-${esc(r.verdict)}" aria-label="${esc(r.verdict)}"></span></td>
         <td class="mono"><span class="q-pkg" data-scan="${r.scan_id}">${esc(r.name)}==${esc(r.version)}</span>
           <div class="st">${esc((r.created_at||"").slice(5,16).replace("T"," "))}${r.note?" · "+esc(r.note):""}</div></td>
-        <td class="mono">${r.risk_score}</td>
+        <td class="mono">${r.verdict==="removed" ? "삭제됨" : r.risk_score}</td>
         <td class="st">${esc(ST_LABEL[r.status]||r.status)}</td>
         <td class="q-links"><a href="https://inspector.pypi.io/project/${n}/${v}/" target="_blank" rel="noopener noreferrer">Inspector</a><a
            href="https://pypi.org/project/${n}/${v}/" target="_blank" rel="noopener noreferrer">PyPI</a></td>

@@ -176,6 +176,19 @@ class ScanStore:
             )
             return int(cur.lastrowid)
 
+    def _enqueue_removed(self, name: str, version: str, now: str) -> bool:
+        with self._connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM watch_queue WHERE name = ? AND verdict = 'removed'", (name,)
+            ).fetchone():
+                return False
+            conn.execute(
+                "INSERT INTO watch_queue (scan_id, name, version, verdict, risk_score,"
+                " created_at, updated_at) VALUES (0, ?, ?, 'removed', 0, ?, ?)",
+                (name, version, now, now),
+            )
+            return True
+
     def _queue(self, status: str | None, limit: int) -> list[dict]:
         sql = "SELECT * FROM watch_queue"
         args: tuple = ()
@@ -243,6 +256,11 @@ class ScanStore:
     async def enqueue(self, record: dict, now: str) -> int:
         """스캔 결과(run_scan 응답 dict)를 검토 큐에 넣는다."""
         return await asyncio.to_thread(self._enqueue, record, now)
+
+    async def enqueue_removed(self, name: str, version: str, now: str) -> bool:
+        """피드에 보였는데 스캔 전에 PyPI 에서 사라진 패키지 — 패키지당 한 번만 넣는다.
+        scan_id 는 0 (스캔할 아카이브가 이미 없다). 새로 넣었으면 True."""
+        return await asyncio.to_thread(self._enqueue_removed, name, version, now)
 
     async def queue(self, status: str | None = None, limit: int = 100) -> list[dict]:
         return await asyncio.to_thread(self._queue, status, limit)

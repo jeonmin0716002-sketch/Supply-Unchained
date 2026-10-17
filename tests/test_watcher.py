@@ -66,11 +66,12 @@ def _record(name, version, verdict="safe", score=5, scan_id=1, typo=0.1, new=Tru
 class _Fake:
     """피드·버전 조회·스캔을 대신하는 가짜. 호출 기록을 남긴다."""
 
-    def __init__(self, items, verdicts=None, fail=(), feed_errors=()):
+    def __init__(self, items, verdicts=None, fail=(), feed_errors=(), gone_at_scan=()):
         self.items = items
         self.verdicts = verdicts or {}
         self.fail = set(fail)
         self.feed_errors = list(feed_errors)
+        self.gone_at_scan = set(gone_at_scan)
         self.resolved: list[str] = []
         self.scanned: list[str] = []
 
@@ -91,6 +92,8 @@ class _Fake:
         verdict, score, typo, *rules = self.verdicts.get(req.name, ("safe", 5, 0.1))
         record = _record(req.name, req.version, verdict, score, 0, typo,
                          rules=tuple(rules[0]) if rules else ())
+        if req.name in self.gone_at_scan:
+            record["layer_errors"] = [f"static: {req.name} is not on PyPI (removed)"]
         # 진짜 run_scan 처럼 scans 테이블에 남긴다 — 큐 중복 판단이 이 기록을 읽는다
         record["scan_id"] = await store.insert({**record, "ecosystem": "pip", "scanned_at": "t"})
         await store.finalize(record["scan_id"], record)
@@ -199,7 +202,8 @@ async def test_failed_scan_is_retried_next_cycle(store):
 async def test_unresolvable_and_invalid_items_are_reported(store):
     fake = _Fake([("gone", None), ("ok", "1..0")])
     report = await _cycle(fake, store)
-    assert [spec for spec, _ in report.failed] == ["gone"]
+    assert report.failed == []
+    assert report.removed == ["gone"]  # 404 는 실패가 아니라 "PyPI 에서 삭제됨"
     assert report.skipped_invalid == ["ok==1..0"]
     assert fake.scanned == []
 
@@ -218,6 +222,22 @@ async def test_new_projects_are_scanned_before_updates_when_capped(store):
     fake = _Fake([("bigframework", "9.1.0"), ("brand-new-pkg", None)])
     report = await _cycle(fake, store, max_scans=1)
     assert fake.scanned == ["brand-new-pkg==1.0.0"] and report.deferred == 1
+
+
+async def test_removed_new_project_is_queued_once_and_not_rechecked(store):
+    fake = _Fake([("gone", None)])
+    await _cycle(fake, store)
+    report = await _cycle(fake, store)
+    assert report.removed == [] and fake.resolved == ["gone"]  # 두 번째 주기엔 조회조차 안 함
+    [item] = await store.queue("new")
+    assert (item["name"], item["verdict"], item["scan_id"]) == ("gone", "removed", 0)
+
+
+async def test_release_gone_at_scan_time_is_queued_as_removed(store):
+    fake = _Fake([("evil", "1.0")], gone_at_scan={"evil"})
+    report = await _cycle(fake, store)
+    assert report.removed == ["evil"] and report.flagged == []
+    assert [q["verdict"] for q in await store.queue("new")] == ["removed"]
 
 
 async def test_feed_errors_are_surfaced_not_swallowed(store):
@@ -266,3 +286,42 @@ def test_queue_patch_rejects_unknown_status_and_missing_item(client):
     bad = client.patch(f"/api/v1/watch/queue/{item}", json={"status": "deleted"})
     assert bad.status_code == 422
     assert client.patch("/api/v1/watch/queue/9999", json={"status": "malicious"}).status_code == 404
+
+
+# ── OpenSSF 대조 (watcher/crosscheck.py) ────────────────────────────
+
+def test_crosscheck_status_classification(tmp_path):
+    import asyncio
+
+    from watcher.crosscheck import _our_status
+
+    s = ScanStore(str(tmp_path / "x.db"))
+
+    async def seed():
+        await s.init()
+        caught = _record("evil", "1.0", "block", 90, 0, rules=("custom-pth",))
+        caught["static_findings"][0]["severity"] = "high"
+        caught["scan_id"] = await s.insert({**caught, "ecosystem": "pip", "scanned_at": "t"})
+        await s.finalize(caught["scan_id"], caught)
+        await s.enqueue(caught, "t")
+        await s.enqueue_removed("gone", "?", "t")
+        quiet = _record("sneaky", "1.0", "safe", 5, 0)
+        quiet["scan_id"] = await s.insert({**quiet, "ecosystem": "pip", "scanned_at": "t"})
+        await s.finalize(quiet["scan_id"], quiet)
+
+    asyncio.run(seed())
+    import sqlite3
+
+    db = sqlite3.connect(str(tmp_path / "x.db"))
+    assert _our_status(db, "Evil")[0] == "caught"   # 이름 대소문자 무시
+    assert _our_status(db, "gone")[0] == "removed"
+    assert _our_status(db, "sneaky")[0] == "missed"
+    assert _our_status(db, "never")[0] == "unseen"
+
+
+def test_crosscheck_parses_nanosecond_timestamps():
+    from watcher.crosscheck import _parse_ts
+
+    assert _parse_ts("2026-10-16T11:17:07.362058413Z").isoformat() == (
+        "2026-10-16T11:17:07.362058+00:00"
+    )
