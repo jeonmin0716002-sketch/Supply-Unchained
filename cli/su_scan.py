@@ -412,10 +412,11 @@ def watch(
             follow_redirects=True,
             headers={"User-Agent": "supply-unchained-watcher/0.1"},
         ) as http:
+            missing: dict = {}  # 조회가 안 된 패키지 — 주기를 넘어 유예 시간을 잰다
             while True:
                 report = await run_cycle(
                     http=http, store=store, scan=partial(run_scan, bandit=with_bandit),
-                    max_scans=max_scans, concurrency=concurrency,
+                    max_scans=max_scans, concurrency=concurrency, missing=missing,
                 )
                 _render_cycle(report)
                 if once:
@@ -435,12 +436,13 @@ def _render_cycle(report) -> None:
         f"[red]의심 {len(report.flagged)}[/red] · 실패 {len(report.failed)}"
         + (f" · 다음 주기로 {report.deferred}" if report.deferred else "")
         + (f" · [magenta]삭제 {len(report.removed)}[/magenta]" if report.removed else "")
+        + (f" · [dim]조회 안 됨 {report.missing} (30분 뒤 재확인)[/dim]" if report.missing else "")
     )
     for err in report.feed_errors:
         console.print(f"  [yellow]피드 조회 실패[/yellow] {escape(err)}")
     for name in report.removed:
         console.print(
-            f"  [magenta]PyPI 에서 삭제됨[/magenta] {escape(name)} — 스캔 전에 사라짐 (큐에 기록)"
+            f"  [magenta]PyPI 에서 삭제됨[/magenta] {escape(name)} — 30분 넘게 조회 안 됨"
         )
     for spec, why in report.failed:
         # 실패한 릴리스는 seen 으로 표시되지 않아 다음 주기에 재시도된다

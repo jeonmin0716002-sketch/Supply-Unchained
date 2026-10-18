@@ -27,6 +27,7 @@ nightly 마다 같은 .pth 로 6번 올라왔다. 이유가 바뀌면(예: 정�
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -55,10 +56,19 @@ class CycleReport:
     skipped_invalid: list[str] = field(default_factory=list)     # 이름/버전 검증 실패
     feed_errors: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)    # 스캔 전에 PyPI 에서 사라진 패키지
+    missing: int = 0                       # 조회가 안 돼 MISSING_GRACE 뒤 다시 볼 패키지 수
 
 
 #: 감시 큐에 "PyPI 에서 삭제됨" 을 남길 때 쓰는 seen 표시 버전 — 다음 주기에 다시 조회하지 않게
 REMOVED_MARK = "(removed)"
+
+#: 조회가 안 된 패키지를 "삭제됨"으로 확정하기까지 기다리는 시간(초). 피드에 막 뜬 새
+#: 프로젝트는 PyPI JSON API(CDN)에 아직 없어 404 가 나기도 한다 — 실측(2026-10-18 밤):
+#: 업로드 1분 뒤 조회해 "삭제됨"으로 기록한 35건 중 34건이 다음 날 멀쩡히 있었다.
+MISSING_GRACE = 30 * 60
+
+#: 조회가 안 된 패키지 → (버전 또는 None, 처음 안 된 시각). 주기를 넘어 유지되도록 호출자가 넘긴다.
+Missing = dict[str, tuple[str | None, float]]
 
 
 def _removed_from_pypi(record: dict) -> bool:
@@ -121,10 +131,16 @@ async def run_cycle(
     resolve: ResolveFn = resolve_latest,
     max_scans: int = 50,
     concurrency: int = 3,
+    missing: Missing | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> CycleReport:
     report = CycleReport()
+    missing = {} if missing is None else missing
+    now = clock()
+    # 유예가 끝난 것은 피드에서 이미 빠졌어도 마지막으로 한 번 더 본다
+    due = {n for n, (_, t) in missing.items() if now - t >= MISSING_GRACE}
     items, report.feed_errors = await fetch(http)
-    items = list(dict.fromkeys(items))
+    items = list(dict.fromkeys([*items, *((n, missing[n][0]) for n in sorted(due))]))
     report.fetched = len(items)
 
     # 신규 프로젝트 피드는 버전이 없다. 이미 본 이름이면 최신 버전 조회를 건너뛴다 —
@@ -136,16 +152,26 @@ async def run_cycle(
         """피드에 보였는데 스캔 전에 PyPI 가 지운 패키지. 새 업로드가 몇 분 만에 사라지는 건
         거의 PyPI 의 악성 차단이다 — 우리 엔진이 봤든 못 봤든 놓치면 안 되는 사후 정답이다
         (실측: OpenSSF 신고 marocolor 는 감시 중 탐지됐는데 우리 기록에 흔적이 없었다)."""
+        missing.pop(name, None)
         if await store.enqueue_removed(name, version, _now()):
             report.removed.append(name)
+
+    async def _not_found(name: str, version: str | None) -> None:
+        """조회가 안 됐다 — 유예가 지났으면 삭제로 확정, 아니면 나중에 다시 본다.
+        seen 으로 표시하지 않으므로 피드에 남아 있는 동안은 매 주기 다시 조회된다."""
+        if name in due:
+            if version is None:
+                await store.mark_seen(name, REMOVED_MARK, _now())
+            await _removed(name, version or "?")
+        else:
+            missing.setdefault(name, (version, now))
 
     async def _resolve(name: str) -> tuple[str, str] | None:
         async with sem:
             try:
                 return name, await resolve(name, http)
             except PackageNotFound:
-                await store.mark_seen(name, REMOVED_MARK, _now())
-                await _removed(name, "?")
+                await _not_found(name, None)
                 return None
             except (PyPIError, httpx.HTTPError) as exc:
                 report.failed.append((name, f"최신 버전 조회 실패: {exc}"))
@@ -180,11 +206,14 @@ async def run_cycle(
                 report.failed.append((f"{req.name}=={req.version}", str(exc)))
                 return
         record = result.model_dump(mode="json")
-        await store.mark_seen(req.name, req.version, _now())
         report.scanned += 1
         if _removed_from_pypi(record):
-            await _removed(req.name, req.version)
+            if req.name in due:
+                await store.mark_seen(req.name, req.version, _now())
+            await _not_found(req.name, req.version)
             return
+        await store.mark_seen(req.name, req.version, _now())
+        missing.pop(req.name, None)
         if is_suspicious(record):
             seen_before = await store.queued_records(req.name)
             if any(signature(r) == signature(record) for r in seen_before):
@@ -194,4 +223,5 @@ async def run_cycle(
             report.flagged.append(record)
 
     await asyncio.gather(*(_scan(r) for r in requests))
+    report.missing = len(missing)
     return report

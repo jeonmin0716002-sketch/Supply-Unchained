@@ -9,7 +9,7 @@ from api.main import app
 from api.storage import ScanStore
 from common.pypi import PackageNotFound
 from watcher.feed import parse_feed
-from watcher.runner import is_suspicious, run_cycle
+from watcher.runner import MISSING_GRACE, is_suspicious, run_cycle
 
 NEW_PACKAGES_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel>
@@ -203,7 +203,7 @@ async def test_unresolvable_and_invalid_items_are_reported(store):
     fake = _Fake([("gone", None), ("ok", "1..0")])
     report = await _cycle(fake, store)
     assert report.failed == []
-    assert report.removed == ["gone"]  # 404 는 실패가 아니라 "PyPI 에서 삭제됨"
+    assert report.removed == [] and report.missing == 1  # 404 는 실패가 아니라 재확인 대상
     assert report.skipped_invalid == ["ok==1..0"]
     assert fake.scanned == []
 
@@ -224,19 +224,54 @@ async def test_new_projects_are_scanned_before_updates_when_capped(store):
     assert fake.scanned == ["brand-new-pkg==1.0.0"] and report.deferred == 1
 
 
-async def test_removed_new_project_is_queued_once_and_not_rechecked(store):
-    fake = _Fake([("gone", None)])
-    await _cycle(fake, store)
-    report = await _cycle(fake, store)
-    assert report.removed == [] and fake.resolved == ["gone"]  # 두 번째 주기엔 조회조차 안 함
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+async def test_removed_new_project_is_queued_once_after_grace(store):
+    fake, clock, missing = _Fake([("gone", None)]), _Clock(), {}
+    report = await _cycle(fake, store, missing=missing, clock=clock)
+    assert report.removed == [] and await store.queue("new") == []  # 아직 확정하지 않는다
+
+    clock.t += MISSING_GRACE
+    fake.items = []  # 피드에서 빠졌어도 유예가 끝나면 마지막으로 다시 본다
+    report = await _cycle(fake, store, missing=missing, clock=clock)
+    assert report.removed == ["gone"] and missing == {}
     [item] = await store.queue("new")
     assert (item["name"], item["verdict"], item["scan_id"]) == ("gone", "removed", 0)
 
+    fake.items = [("gone", None)]
+    report = await _cycle(fake, store, missing=missing, clock=clock)
+    assert report.removed == [] and fake.resolved == ["gone", "gone"]  # 확정 뒤엔 조회 안 함
 
-async def test_release_gone_at_scan_time_is_queued_as_removed(store):
-    fake = _Fake([("evil", "1.0")], gone_at_scan={"evil"})
-    report = await _cycle(fake, store)
-    assert report.removed == ["evil"] and report.flagged == []
+
+async def test_not_yet_visible_new_project_is_scanned_when_it_appears(store):
+    # 실측: 피드에 막 뜬 새 프로젝트가 PyPI JSON(CDN)에 아직 없어 404 — 삭제가 아니다
+    fake, clock, missing = _Fake([("gone", None)]), _Clock(), {}
+    await _cycle(fake, store, missing=missing, clock=clock)
+    fake.resolve = lambda name, http: _ok()
+    clock.t += 120
+    report = await _cycle(fake, store, missing=missing, clock=clock)
+    assert fake.scanned == ["gone==1.0.0"] and report.removed == [] and missing == {}
+    assert await store.queue("new") == []
+
+
+async def _ok():
+    return "1.0.0"
+
+
+async def test_release_gone_at_scan_time_is_queued_as_removed_after_grace(store):
+    fake, clock, missing = _Fake([("evil", "1.0")], gone_at_scan={"evil"}), _Clock(), {}
+    report = await _cycle(fake, store, missing=missing, clock=clock)
+    assert report.removed == [] and report.flagged == [] and missing == {"evil": ("1.0", 1000.0)}
+
+    clock.t += MISSING_GRACE
+    report = await _cycle(fake, store, missing=missing, clock=clock)
+    assert report.removed == ["evil"]
     assert [q["verdict"] for q in await store.queue("new")] == ["removed"]
 
 
