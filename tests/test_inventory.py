@@ -71,3 +71,66 @@ def test_broken_file_raises_value_error():
         parse_manifest("uv.lock", "[[package")
     with pytest.raises(ValueError):
         parse_manifest("Pipfile.lock", "{")
+
+
+# ── discover ──────────────────────────────────────────────────────────
+
+import ecosystems  # noqa: E402
+from ecosystems.base import Dependency, Ecosystem  # noqa: E402
+from inventory.discover import discover  # noqa: E402
+
+
+class FakeEco(Ecosystem):
+    id = "fake"
+    osv_ecosystem = "Fake"
+    purl_type = "fake"
+    registry_label = "Fake"
+    manifest_filenames = ("fake.lock", "fake.json")
+
+    async def fetch_project(self, name, *, client):
+        raise NotImplementedError
+
+    def analyze_tree(self, tree, *, artifact=None):
+        return []
+
+    def parse_manifest(self, filename, text):
+        if text.strip() == "BAD":
+            raise ValueError("깨짐")
+        return [Dependency("fake", n.strip(), "1.0") for n in text.split(",") if n.strip()]
+
+
+@pytest.fixture
+def fake_eco(monkeypatch):
+    monkeypatch.setattr(ecosystems, "available", lambda: [FakeEco()])
+
+
+def test_discover_prefers_lock_dedupes_and_skips(tmp_path, fake_eco):
+    (tmp_path / "fake.lock").write_text("A,b")
+    (tmp_path / "fake.json").write_text("zzz")  # lock 이 있으니 읽히면 안 됨
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "fake.json").write_text("A")  # manifest 만 있는 디렉터리
+    (tmp_path / "node_modules" / "x").mkdir(parents=True)
+    (tmp_path / "node_modules" / "x" / "fake.lock").write_text("evil")
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "fake.lock").write_text("BAD")
+    r = discover(tmp_path)
+    assert sorted(d.name for d in r.dependencies) == ["A", "b"]
+    key = ("fake", "a", "1.0")
+    assert sorted(r.sources[key]) == ["fake.lock", "sub/fake.json"]
+    assert [e[0] for e in r.errors] == ["bad/fake.lock"]
+
+
+def test_discover_does_not_follow_symlink_out_of_root(tmp_path, fake_eco):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "fake.lock").write_text("leak")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    try:
+        (proj / "link").symlink_to(outside, target_is_directory=True)
+        (proj / "fake.lock").symlink_to(outside / "fake.lock")
+    except (OSError, NotImplementedError):
+        pytest.skip("심볼릭 링크를 만들 수 없는 환경")
+    r = discover(proj)
+    assert r.dependencies == []
+    assert r.errors and "루트 밖" in r.errors[0][1]
