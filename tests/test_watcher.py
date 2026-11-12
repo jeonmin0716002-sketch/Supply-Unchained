@@ -360,3 +360,38 @@ def test_crosscheck_parses_nanosecond_timestamps():
     assert _parse_ts("2026-10-16T11:17:07.362058413Z").isoformat() == (
         "2026-10-16T11:17:07.362058+00:00"
     )
+
+
+# ── 저장소: 생태계 열 마이그레이션 ─────────────────────────────────
+
+def test_storage_migrates_old_schema_in_place_and_is_idempotent(tmp_path):
+    import asyncio
+    import sqlite3
+
+    path = str(tmp_path / "old.db")
+    c = sqlite3.connect(path)
+    c.executescript(
+        "CREATE TABLE watch_seen(name TEXT NOT NULL, version TEXT NOT NULL,"
+        " seen_at TEXT NOT NULL, PRIMARY KEY(name, version));"
+        "INSERT INTO watch_seen VALUES('a','1','t');"
+        "CREATE TABLE watch_queue(id INTEGER PRIMARY KEY AUTOINCREMENT, scan_id INTEGER NOT NULL,"
+        " name TEXT NOT NULL, version TEXT NOT NULL, verdict TEXT NOT NULL,"
+        " risk_score INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'new',"
+        " note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+        "INSERT INTO watch_queue(scan_id,name,version,verdict,risk_score,created_at,updated_at)"
+        " VALUES(1,'a','1','block',9,'t','t');"
+    )
+    c.commit()
+    c.close()
+    s = ScanStore(path)
+
+    async def go():
+        await s.init()
+        await s.init()  # 두 번 돌려도 같은 결과
+        assert await s.unseen([("a", "1")]) == []             # 기존 행은 pip 로 남는다
+        assert await s.unseen([("a", "1")], "npm") == [("a", "1")]  # 생태계가 다르면 별개
+        await s.mark_seen("a", "1", "t", "npm")
+        assert [q["ecosystem"] for q in await s.queue()] == ["pip"]
+        assert await s.queue(ecosystem="npm") == []
+
+    asyncio.run(go())

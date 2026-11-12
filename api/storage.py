@@ -45,14 +45,16 @@ CREATE INDEX IF NOT EXISTS idx_scans_time ON scans (scanned_at DESC);
 
 -- PyPI 감시기(watcher/) — 이미 스캔한 릴리스와, 사람이 확인할 의심 패키지 큐
 CREATE TABLE IF NOT EXISTS watch_seen (
+    ecosystem TEXT NOT NULL DEFAULT 'pip',
     name     TEXT NOT NULL,
     version  TEXT NOT NULL,
     seen_at  TEXT NOT NULL,
-    PRIMARY KEY (name, version)
+    PRIMARY KEY (ecosystem, name, version)
 );
 CREATE TABLE IF NOT EXISTS watch_queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id     INTEGER NOT NULL REFERENCES scans (id),
+    ecosystem   TEXT NOT NULL DEFAULT 'pip',
     name        TEXT NOT NULL,
     version     TEXT NOT NULL,
     verdict     TEXT NOT NULL,
@@ -93,7 +95,32 @@ class ScanStore:
             # WAL 은 DB 파일에 한 번 기록되면 유지되는 설정이라 init 에서만 켜면 된다.
             # 읽기(대시보드 이력)가 쓰기(진행 중 스캔)를 막지 않게 하는 것이 목적.
             conn.execute("PRAGMA journal_mode=WAL")
+            self._migrate(conn)
             conn.executescript(_SCHEMA)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """구 스키마(생태계 열 없음) DB 를 행 손실 없이 제자리 업그레이드 — 멱등.
+
+        watch_queue 는 열 추가만으로 되지만, watch_seen 은 기본키가 (name, version) 이라
+        (ecosystem, name, version) 으로 바꾸려면 테이블을 다시 만들어야 한다(SQLite 한계)."""
+        def cols(table: str) -> set[str]:
+            return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+        if cols("watch_queue") and "ecosystem" not in cols("watch_queue"):
+            conn.execute(
+                "ALTER TABLE watch_queue ADD COLUMN ecosystem TEXT NOT NULL DEFAULT 'pip'"
+            )
+        if cols("watch_seen") and "ecosystem" not in cols("watch_seen"):
+            conn.executescript(
+                "ALTER TABLE watch_seen RENAME TO watch_seen_old;"
+                "CREATE TABLE watch_seen (ecosystem TEXT NOT NULL DEFAULT 'pip',"
+                " name TEXT NOT NULL, version TEXT NOT NULL, seen_at TEXT NOT NULL,"
+                " PRIMARY KEY (ecosystem, name, version));"
+                "INSERT INTO watch_seen (ecosystem, name, version, seen_at)"
+                " SELECT 'pip', name, version, seen_at FROM watch_seen_old;"
+                "DROP TABLE watch_seen_old;"
+            )
 
     def _insert(self, record: dict) -> int:
         with self._connect() as conn:
@@ -133,39 +160,45 @@ class ScanStore:
             ).fetchone()
         return json.loads(row["response_json"]) if row else None
 
-    def _unseen(self, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    def _unseen(self, items: list[tuple[str, str]], eco: str) -> list[tuple[str, str]]:
         with self._connect() as conn:
             return [
                 (n, v)
                 for n, v in items
                 if conn.execute(
-                    "SELECT 1 FROM watch_seen WHERE name = ? AND version = ?", (n, v)
+                    "SELECT 1 FROM watch_seen WHERE ecosystem = ? AND name = ? AND version = ?",
+                    (eco, n, v),
                 ).fetchone()
                 is None
             ]
 
-    def _seen_names(self, names: list[str]) -> set[str]:
+    def _seen_names(self, names: list[str], eco: str) -> set[str]:
         with self._connect() as conn:
             return {
                 n
                 for n in names
-                if conn.execute("SELECT 1 FROM watch_seen WHERE name = ? LIMIT 1", (n,)).fetchone()
+                if conn.execute(
+                    "SELECT 1 FROM watch_seen WHERE ecosystem = ? AND name = ? LIMIT 1",
+                    (eco, n),
+                ).fetchone()
             }
 
-    def _mark_seen(self, name: str, version: str, now: str) -> None:
+    def _mark_seen(self, name: str, version: str, now: str, eco: str) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO watch_seen (name, version, seen_at) VALUES (?, ?, ?)",
-                (name, version, now),
+                "INSERT OR IGNORE INTO watch_seen (ecosystem, name, version, seen_at)"
+                " VALUES (?, ?, ?, ?)",
+                (eco, name, version, now),
             )
 
     def _enqueue(self, record: dict, now: str) -> int:
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO watch_queue (scan_id, name, version, verdict, risk_score,"
-                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO watch_queue (scan_id, ecosystem, name, version, verdict, risk_score,"
+                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record["scan_id"],
+                    record.get("ecosystem", "pip"),
                     record["name"],
                     record["version"],
                     record["verdict"],
@@ -176,36 +209,43 @@ class ScanStore:
             )
             return int(cur.lastrowid)
 
-    def _enqueue_removed(self, name: str, version: str, now: str) -> bool:
+    def _enqueue_removed(self, name: str, version: str, now: str, eco: str) -> bool:
         with self._connect() as conn:
             if conn.execute(
-                "SELECT 1 FROM watch_queue WHERE name = ? AND verdict = 'removed'", (name,)
+                "SELECT 1 FROM watch_queue"
+                " WHERE ecosystem = ? AND name = ? AND verdict = 'removed'",
+                (eco, name),
             ).fetchone():
                 return False
             conn.execute(
-                "INSERT INTO watch_queue (scan_id, name, version, verdict, risk_score,"
-                " created_at, updated_at) VALUES (0, ?, ?, 'removed', 0, ?, ?)",
-                (name, version, now, now),
+                "INSERT INTO watch_queue (scan_id, ecosystem, name, version, verdict, risk_score,"
+                " created_at, updated_at) VALUES (0, ?, ?, ?, 'removed', 0, ?, ?)",
+                (eco, name, version, now, now),
             )
             return True
 
-    def _queue(self, status: str | None, limit: int) -> list[dict]:
+    def _queue(self, status: str | None, limit: int, eco: str | None = None) -> list[dict]:
         sql = "SELECT * FROM watch_queue"
-        args: tuple = ()
+        where, args = [], ()
         if status:
-            sql += " WHERE status = ?"
-            args = (status,)
+            where.append("status = ?")
+            args += (status,)
+        if eco:
+            where.append("ecosystem = ?")
+            args += (eco,)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY id DESC LIMIT ?"
         with self._connect() as conn:
             rows = conn.execute(sql, (*args, limit)).fetchall()
         return [dict(r) for r in rows]
 
-    def _queued_records(self, name: str) -> list[dict]:
+    def _queued_records(self, name: str, eco: str) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT s.response_json FROM watch_queue q JOIN scans s ON s.id = q.scan_id"
-                " WHERE q.name = ?",
-                (name,),
+                " WHERE q.name = ? AND q.ecosystem = ?",
+                (name, eco),
             ).fetchall()
         return [json.loads(r["response_json"]) for r in rows]
 
@@ -242,32 +282,40 @@ class ScanStore:
 
     # ── PyPI 감시기 ──────────────────────────────────────────────────
 
-    async def unseen(self, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    async def unseen(
+        self, items: list[tuple[str, str]], ecosystem: str = "pip"
+    ) -> list[tuple[str, str]]:
         """아직 스캔하지 않은 (name, version) 만 순서를 지켜 돌려준다."""
-        return await asyncio.to_thread(self._unseen, items)
+        return await asyncio.to_thread(self._unseen, items, ecosystem)
 
-    async def seen_names(self, names: list[str]) -> set[str]:
+    async def seen_names(self, names: list[str], ecosystem: str = "pip") -> set[str]:
         """이 중 어떤 버전이든 한 번이라도 스캔한 이름."""
-        return await asyncio.to_thread(self._seen_names, names)
+        return await asyncio.to_thread(self._seen_names, names, ecosystem)
 
-    async def mark_seen(self, name: str, version: str, now: str) -> None:
-        await asyncio.to_thread(self._mark_seen, name, version, now)
+    async def mark_seen(
+        self, name: str, version: str, now: str, ecosystem: str = "pip"
+    ) -> None:
+        await asyncio.to_thread(self._mark_seen, name, version, now, ecosystem)
 
     async def enqueue(self, record: dict, now: str) -> int:
         """스캔 결과(run_scan 응답 dict)를 검토 큐에 넣는다."""
         return await asyncio.to_thread(self._enqueue, record, now)
 
-    async def enqueue_removed(self, name: str, version: str, now: str) -> bool:
+    async def enqueue_removed(
+        self, name: str, version: str, now: str, ecosystem: str = "pip"
+    ) -> bool:
         """피드에 보였는데 스캔 전에 PyPI 에서 사라진 패키지 — 패키지당 한 번만 넣는다.
         scan_id 는 0 (스캔할 아카이브가 이미 없다). 새로 넣었으면 True."""
-        return await asyncio.to_thread(self._enqueue_removed, name, version, now)
+        return await asyncio.to_thread(self._enqueue_removed, name, version, now, ecosystem)
 
-    async def queue(self, status: str | None = None, limit: int = 100) -> list[dict]:
-        return await asyncio.to_thread(self._queue, status, limit)
+    async def queue(
+        self, status: str | None = None, limit: int = 100, ecosystem: str | None = None
+    ) -> list[dict]:
+        return await asyncio.to_thread(self._queue, status, limit, ecosystem)
 
-    async def queued_records(self, name: str) -> list[dict]:
+    async def queued_records(self, name: str, ecosystem: str = "pip") -> list[dict]:
         """이 패키지가 큐에 오른 적이 있으면 그때의 스캔 결과들 (상태 무관)."""
-        return await asyncio.to_thread(self._queued_records, name)
+        return await asyncio.to_thread(self._queued_records, name, ecosystem)
 
     async def update_queue(
         self, item_id: int, status: str, note: str | None, now: str
