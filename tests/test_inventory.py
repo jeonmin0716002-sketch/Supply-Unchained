@@ -192,3 +192,71 @@ def test_read_spdx_and_unsupported(sbom_ecos):
     assert r.unsupported == ["pkg:hex/plug@1.0"]
     with pytest.raises(ValueError):
         read_sbom("{}")
+
+
+# ── osv_batch ─────────────────────────────────────────────────────────
+
+import httpx  # noqa: E402
+
+from inventory import osv_batch  # noqa: E402
+from inventory.osv_batch import OsvQuery, query_batch  # noqa: E402
+
+
+async def _nosleep(_):
+    return None
+
+
+def _osv_client(handler):
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_osv_chunking_pagination_and_hydration(monkeypatch):
+    monkeypatch.setattr(osv_batch, "CHUNK", 2)
+    posts = []
+
+    def handler(req: httpx.Request):
+        if req.method == "POST":
+            qs = json.loads(req.content)["queries"]
+            posts.append(len(qs))
+            res = []
+            for q in qs:
+                if q["package"]["name"] == "a" and not q.get("page_token"):
+                    res.append({"vulns": [{"id": "V1"}], "next_page_token": "t"})
+                elif q["package"]["name"] == "a":
+                    res.append({"vulns": [{"id": "V2"}]})
+                else:
+                    res.append({})
+            return httpx.Response(200, json={"results": res})
+        vid = req.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json={
+            "id": vid, "summary": f"sum {vid}", "database_specific": {"severity": "HIGH"},
+            "affected": [{"package": {"name": "a"},
+                          "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "2.0"}]}]}]})
+
+    qs = [OsvQuery("PyPI", n, "1") for n in ("a", "b", "c")]
+    async with _osv_client(handler) as c:
+        out = await query_batch(qs, client=c, sleep=_nosleep)
+    assert [v.id for v in out[0].vulns] == ["V1", "V2"]
+    assert out[0].vulns[0].fixed == "2.0" and out[0].vulns[0].severity.value == "high"
+    assert out[1].vulns == [] and out[1].error is None
+    assert sorted(posts) == [1, 1, 2]  # 청크 2개, 그중 a 가 든 청크 한 번 더 (a 만 재질의)
+
+
+async def test_osv_failure_is_error_not_clean():
+    def handler(req):
+        return httpx.Response(503)
+
+    async with _osv_client(handler) as c:
+        out = await query_batch([OsvQuery("PyPI", "a", "1")], client=c, sleep=_nosleep)
+    assert out[0].error and out[0].vulns == []
+
+
+async def test_osv_detail_failure_marks_error():
+    def handler(req):
+        if req.method == "POST":
+            return httpx.Response(200, json={"results": [{"vulns": [{"id": "V9"}]}]})
+        return httpx.Response(500)
+
+    async with _osv_client(handler) as c:
+        out = await query_batch([OsvQuery("PyPI", "a", "1")], client=c, sleep=_nosleep)
+    assert out[0].error and out[0].vulns[0].id == "V9"
