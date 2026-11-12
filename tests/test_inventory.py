@@ -134,3 +134,61 @@ def test_discover_does_not_follow_symlink_out_of_root(tmp_path, fake_eco):
     r = discover(proj)
     assert r.dependencies == []
     assert r.errors and "루트 밖" in r.errors[0][1]
+
+
+# ── sbom ──────────────────────────────────────────────────────────────
+
+from inventory.sbom import parse_purl, read_sbom, write_cyclonedx  # noqa: E402
+
+
+class _Maven(FakeEco):
+    id = "maven"
+    purl_type = "maven"
+
+
+class _Npm(FakeEco):
+    id = "npm"
+    purl_type = "npm"
+
+
+@pytest.fixture
+def sbom_ecos(monkeypatch):
+    monkeypatch.setattr(ecosystems, "available", lambda: [FakeEco(), _Maven(), _Npm()])
+
+
+def test_parse_purl_variants():
+    assert parse_purl("pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1") == (
+        "maven", "org.apache.logging.log4j:log4j-core", "2.14.1")
+    assert parse_purl("pkg:npm/%40babel/core@7.0.0") == ("npm", "@babel/core", "7.0.0")
+    assert parse_purl("pkg:golang/github.com/foo/bar@v1.2.3?type=x#sub") == (
+        "golang", "github.com/foo/bar", "v1.2.3")
+    assert parse_purl("pkg:npm/left-pad") == ("npm", "left-pad", None)
+    assert parse_purl("notapurl") is None
+
+
+def test_sbom_round_trip_and_vulns(sbom_ecos):
+    deps = [Dependency("npm", "@babel/core", "7.0.0"),
+            Dependency("maven", "org.x:y", "1.0"),
+            Dependency("npm", "left-pad", None)]
+    results = {("npm", "@babel/core", "7.0.0"): {
+        "verdict": "warn", "findings": ["rule-a"],
+        "vulns": [{"id": "GHSA-1", "severity": "high", "summary": "s", "fixed": "7.1"}]}}
+    bom = write_cyclonedx(deps, results)
+    assert bom["specVersion"] == "1.5"
+    assert bom["vulnerabilities"][0]["affects"][0]["ref"] == "pkg:npm/%40babel/core@7.0.0"
+    back = read_sbom(json.dumps(bom))
+    assert [(d.ecosystem, d.name, d.version) for d in back.dependencies] == [
+        (d.ecosystem, d.name, d.version) for d in deps]
+
+
+def test_read_spdx_and_unsupported(sbom_ecos):
+    doc = {"spdxVersion": "SPDX-2.3", "packages": [
+        {"externalRefs": [{"referenceType": "purl",
+                           "referenceLocator": "pkg:npm/left-pad@1.3.0"}]},
+        {"externalRefs": [{"referenceType": "purl",
+                           "referenceLocator": "pkg:hex/plug@1.0"}]}]}
+    r = read_sbom(json.dumps(doc))
+    assert [d.name for d in r.dependencies] == ["left-pad"]
+    assert r.unsupported == ["pkg:hex/plug@1.0"]
+    with pytest.raises(ValueError):
+        read_sbom("{}")
