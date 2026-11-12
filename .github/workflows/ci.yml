@@ -34,7 +34,12 @@ jobs:
         #         등)까지 올리면 의도된 코드마다 #nosec 을 달게 되고, 그러면 진짜 신규
         #         findings 가 억제 주석 더미에 묻힌다.
         #   대상: samples/ 는 일부러 악성처럼 쓴 코드라 뺀다 (pyproject 의 ruff exclude 와 같은 이유).
-        run: uv run bandit -q -r api cli common engine scoring -ll
+        #   watcher, ecosystems 도 스캔한다. inventory 는 다른 브랜치에서 들어오는 패키지라
+        #   디렉터리가 있을 때만 포함한다 — 병합 전후 모두 이 워크플로가 통과하도록.
+        run: |
+          dirs="api cli common engine scoring watcher ecosystems"
+          if [ -d inventory ]; then dirs="$dirs inventory"; fi
+          uv run bandit -q -r $dirs -ll
 
       - name: Tests
         run: uv run pytest -q
