@@ -920,3 +920,63 @@ def test_cross_module_finding_is_reported_once():
              "p-1/pkg/log.py": _NET + "def get():\n    requests.get('http://x')\n"}
     hits = [f for f in analyze_files(files) if f.rule == RULE_INSTALL_TIME]
     assert [f.location for f in hits] == ["p-1/pkg/log.py:3"]
+
+
+# ── 수상 토큰 없는 설치·import 시점 프로세스 실행 (MEDIUM) ─────────────────
+
+from engine.rules.install_time import RULE_INSTALL_SPAWN  # noqa: E402
+
+
+def _spawn_findings(files: dict[str, str]):
+    roots = {k.split("/")[0] for k in files if k.endswith("/setup.py")}
+    files = {**{f"{r}/PKG-INFO": "Name: p" for r in roots}, **files}
+    return [f for f in analyze_files(files) if f.rule == RULE_INSTALL_SPAWN]
+
+
+@pytest.mark.parametrize(
+    ("files", "head"),
+    [
+        # lightning 2.6.2 — import 시 스레드에서 번들 스크립트를 파이썬으로 띄운다
+        ({**_INIT, "p-1/pkg/__init__.py":
+          "import os, subprocess, sys, threading\n"
+          "def _run():\n    s = os.path.join(os.path.dirname(__file__), '_runtime', 'start.py')\n"
+          "    subprocess.Popen([sys.executable, s], stdout=subprocess.DEVNULL)\n"
+          "threading.Thread(target=_run, daemon=True).start()\n"}, "python"),
+        # memoryos 2.0.34 — 실행 권한을 주고 번들 바이너리를 실행 (다른 모듈 경유)
+        ({**_INIT, "p-1/memos/__init__.py": "from memos.log import get_logger\nL = get_logger()\n",
+          "p-1/memos/log.py": "def get_logger():\n    from memos._stage0 import trigger\n"
+                              "    trigger()\n",
+          "p-1/memos/_stage0.py": "import subprocess\nfrom pathlib import Path\ndef trigger():\n"
+                                  "    b = Path(__file__).parent / 'sckit'\n    b.chmod(0o700)\n"
+                                  "    subprocess.Popen([str(b), 'stage0'])\n"}, "?"),
+        # setup.py 최상단의 평범한 명령 문자열
+        ({"p-1/setup.py": "import os\nos.system('python helper.py')\n"}, "python"),
+    ],
+)
+def test_install_time_spawn_without_token_is_medium(files, head):
+    [f] = _spawn_findings(files)
+    assert f.severity is Severity.MEDIUM
+    assert f"명령 '{head}'" in f.detail
+    # MEDIUM 만으로는 차단하지 않는다 (정상 라이브러리도 import 시 프로세스를 띄운다)
+    assert RULE_INSTALL_TIME not in _high_rules(files)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "import subprocess\nv = subprocess.check_output(['git', 'describe', '--tags'])\n",
+        "import subprocess\nsubprocess.run('nvidia-smi -L', shell=True)\n",
+        "import subprocess\nsubprocess.check_call([r'C:\\VS\\cl.exe', '/?'])\n",
+        "import os\nos.system('uname -a')\n",
+        # 함수 안 — 부르지 않으면 범위 밖
+        "import subprocess\ndef build():\n    subprocess.run(['python', 'x.py'])\n",
+    ],
+)
+def test_ordinary_build_and_probe_commands_are_not_reported(src):
+    assert _spawn_findings({"p-1/setup.py": src}) == []
+
+
+def test_suspicious_spawn_stays_high_and_is_not_double_reported():
+    files = {"p-1/setup.py": "import subprocess\nsubprocess.Popen('powershell -w hidden x')\n"}
+    assert _spawn_findings(files) == []
+    assert RULE_INSTALL_TIME in _high_rules(files)

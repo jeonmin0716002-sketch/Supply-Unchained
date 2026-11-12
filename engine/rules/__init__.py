@@ -8,7 +8,12 @@ readable in one place.
 from engine.rules.base import AstRule, FileContext, FileRule, make_finding
 from engine.rules.code_patterns import dangerous_calls, obfuscated_payload
 from engine.rules.install_hooks import pth_autoexec, setup_command_hook
-from engine.rules.install_time import RULE_INSTALL_TIME, exfil_endpoint, install_time_exec
+from engine.rules.install_time import (
+    RULE_INSTALL_SPAWN,
+    RULE_INSTALL_TIME,
+    exfil_endpoint,
+    install_time_exec,
+)
 
 #: Applied to every readable file, Python or not.
 FILE_RULES: tuple[FileRule, ...] = (pth_autoexec,)
@@ -24,7 +29,7 @@ AST_RULES: tuple[AstRule, ...] = (
 
 #: 파일 경계를 넘어 범위를 따라가는 규칙 — 여러 시작 파일에서 같은 코드에 닿으므로 위치당
 #: 한 번만 남긴다 (실측: memoryos 는 수백 모듈이 같은 get_logger() 를 거쳐 같은 줄에 닿는다).
-ONE_PER_LOCATION: frozenset[str] = frozenset({RULE_INSTALL_TIME})
+ONE_PER_LOCATION: frozenset[str] = frozenset({RULE_INSTALL_TIME, RULE_INSTALL_SPAWN})
 
 __all__ = [
     "AST_RULES",

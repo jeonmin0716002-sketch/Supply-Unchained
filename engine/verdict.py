@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from engine.rules.code_patterns import RULE_DANGEROUS_CALL, RULE_OBFUSCATED
 from engine.rules.install_hooks import RULE_INSTALL_HOOK, RULE_PTH
-from engine.rules.install_time import RULE_EXFIL, RULE_INSTALL_TIME
+from engine.rules.install_time import RULE_EXFIL, RULE_INSTALL_SPAWN, RULE_INSTALL_TIME
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,12 @@ RULE_CATALOG: dict[str, RuleInfo] = {
         rule_id=RULE_INSTALL_TIME,
         summary="network call or suspicious command run by install-/import-time code",
         cwes=frozenset({"CWE-506"}),
+    ),
+    RULE_INSTALL_SPAWN: RuleInfo(
+        rule_id=RULE_INSTALL_SPAWN,
+        summary="process spawned by install-/import-time code (no known-suspicious token; "
+                "escalated to HIGH by engine.version_diff when new in this release)",
+        cwes=frozenset({"CWE-78"}),
     ),
     RULE_EXFIL: RuleInfo(
         rule_id=RULE_EXFIL,

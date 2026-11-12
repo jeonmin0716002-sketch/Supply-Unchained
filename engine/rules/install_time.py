@@ -38,6 +38,7 @@ from engine.rules.exec_scope import Module, ModuleIndex, Reached, Scope, module_
 
 RULE_INSTALL_TIME = "custom-install-time-exec"
 RULE_EXFIL = "custom-exfil-endpoint"
+RULE_INSTALL_SPAWN = "custom-install-time-spawn"
 
 #: detail 에서 "무엇을 했는가"와 "어디서 불렸는가"를 가르는 표식 (version_diff 가 쓴다)
 ORIGIN_MARK = "←"
@@ -79,6 +80,20 @@ _SUSPICIOUS_CMD = re.compile(
     re.IGNORECASE,
 )
 _HIDDEN_FLAGS = {"CREATE_NO_WINDOW", "DETACHED_PROCESS"}
+
+#: 설치·import 시점에 정상 패키지가 흔히 돌리는 빌드·환경 조사 명령. 이 밖의 프로세스 실행은
+#: 수상 토큰이 없어도 MEDIUM 으로 남긴다 — 탈취 패키지 lightning 2.6.2 는
+#: ``Popen([sys.executable, 번들 스크립트])``, memoryos 2.0.34 는 ``Popen([번들 바이너리, ...])``
+#: 였고 둘 다 명령 문자열이 평범했다. 홀로는 판정을 바꾸지 않고(정상 라이브러리도 import 시
+#: GPU 확인 등을 한다), **새 릴리스에서 처음 나타나면** version_diff 가 HIGH 로 올린다.
+_ORDINARY_COMMANDS = frozenset({
+    "git", "hg", "svn", "cmake", "make", "gmake", "ninja", "meson", "pkg-config", "pkgconf",
+    "gcc", "g++", "cc", "c++", "clang", "clang++", "cl", "ld", "ar", "gfortran", "icc", "icpc",
+    "icx", "ifort", "nvcc", "hipcc", "mpicc", "mpicxx", "swig", "rustc", "cargo", "go",
+    "nvidia-smi", "rocm-smi", "rocminfo", "uname", "ldconfig", "ldd", "otool", "xcrun",
+    "xcode-select", "sw_vers", "lsb_release", "lscpu", "lspci", "sysctl", "getconf", "nproc",
+    "which", "where", "brew", "ccache", "sccache", "file",
+})
 
 _EXFIL_PATTERNS = (
     ("Discord 웹훅", re.compile(r"discord(?:app)?\.com/api/webhooks/\d{15,}/[\w-]{20,}")),
@@ -132,6 +147,25 @@ def _suspicious_spawn(call: ast.Call, aliases: dict[str, str]) -> str | None:
     return None
 
 
+def command_head(call: ast.Call, aliases: dict[str, str]) -> str:
+    """실행하는 명령의 이름(경로·확장자 뺀 첫 낱말). 정적으로 모르면 ``?``.
+
+    ``[sys.executable, ...]`` 은 ``python`` — 파이썬으로 무엇을 돌리는지는 뒤 인자에 있다.
+    """
+    arg: ast.AST | None = call.args[0] if call.args else next(
+        (k.value for k in call.keywords if k.arg in ("args", "cmd", "command", "path")), None)
+    if isinstance(arg, (ast.List, ast.Tuple)) and arg.elts:
+        arg = arg.elts[0]
+    elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        arg = ast.Constant(arg.value.strip().split(" ")[0] if arg.value.strip() else "")
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value:
+        name = PurePosixPath(arg.value.strip("\"'").replace("\\", "/")).name.lower()
+        return name.removesuffix(".exe")
+    if arg is not None and _resolve(arg, aliases) == "sys.executable":
+        return "python"
+    return "?"
+
+
 # ── 실행 범위 ─────────────────────────────────────────────────────
 # 범위 계산 자체는 engine/rules/exec_scope.py — 파일 경계를 넘는 추적(다른 모듈 함수,
 # 인스턴스화, 스레드에 넘긴 함수)의 실측 근거도 그쪽 docstring 에 있다.
@@ -168,7 +202,8 @@ def _seed_module(ctx: FileContext, tree: ast.Module) -> tuple[ModuleIndex, Modul
 
 def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
            *, seed: Module) -> Iterator[StaticFinding]:
-    """범위 안의 호출 중 (1) 네트워크 (2) 수상한 명령 실행을 HIGH 로.
+    """범위 안의 호출 중 (1) 네트워크 (2) 수상한 명령 실행을 HIGH 로, (3) 그 밖의 프로세스
+    실행(평범한 빌드·조사 명령 제외)을 MEDIUM 으로.
 
     다른 모듈에 있는 코드는 그 모듈 위치로 보고하고, 어디서 불렸는지를 ``←`` 뒤에 적는다.
     ``←`` 앞부분(무엇을 했는가)은 버전 비교(engine/version_diff.py)가 행위의 이름으로 쓴다.
@@ -183,16 +218,22 @@ def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
             what = f"네트워크 호출 {_resolve(node.func, aliases)}()"
         elif (token := _suspicious_spawn(node, aliases)) is not None:
             what = f"수상한 명령 실행 {_resolve(node.func, aliases)}() — '{token}'"
+        elif _is_spawn(node, aliases):
+            head = command_head(node, aliases)
+            if head in _ORDINARY_COMMANDS:
+                continue
+            what = f"프로세스 실행 {_resolve(node.func, aliases)}() — 명령 '{head}'"
         else:
             continue
         key = (r.module.relpath, node.lineno, what)
         if key in seen:
             continue
         seen.add(key)
+        plain = what.startswith("프로세스 실행")
         yield make_finding(
-            rule=RULE_INSTALL_TIME,
-            cwe="CWE-506",
-            severity=Severity.HIGH,
+            rule=RULE_INSTALL_SPAWN if plain else RULE_INSTALL_TIME,
+            cwe="CWE-78" if plain else "CWE-506",
+            severity=Severity.MEDIUM if plain else Severity.HIGH,
             ctx=_ctx_for(r.module, ctx),
             line=node.lineno,
             detail=f"{when} {what}{_origin(r, seed)}",
