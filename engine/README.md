@@ -23,7 +23,10 @@
 | `static_analyzer.py` | 패키지 트리 순회 + AST 파싱 → `StaticFinding[]` (**진입점**) |
 | `rules/base.py` | 룰 인터페이스 (`FileRule` / `AstRule`) |
 | `rules/install_hooks.py` | `.pth` 자동실행 · `setup.py` cmdclass 훅 |
+| `rules/install_time.py` | 설치·import 시점 네트워크·명령 실행, 콘솔 진입점, 유출 채널 |
+| `rules/exec_scope.py` | "실제로 실행되는 코드" 범위 — 파일 경계를 넘어 따라간다 |
 | `rules/code_patterns.py` | 위험 함수 호출 · 난독화 페이로드 |
+| `version_diff.py` | 직전 릴리스 대비 새 행위 승격 (계정 탈취) |
 | `rules/__init__.py` | 룰 레지스트리 (활성 룰 목록) |
 | `verdict.py` | 커스텀 룰 CWE 카탈로그 |
 
@@ -114,7 +117,10 @@ analyze_path(root)              # 이미 풀린 트리 → StaticFinding[] (심�
 **악성 패키지를 분석하는 도구가 악성 패키지에 당하면 안 되니까요.**
 
 - `.py .pth .toml .cfg .txt .sh .bat .ps1`만 읽습니다 (나머지는 바이너리·노이즈)
-- 2MB 초과 파일, `__pycache__` / `.git` / `node_modules` 등은 스킵
+- 코드 파일(`.py`·`.pth`)은 20MB 까지 크기와 무관하게 읽고, 넘으면 `unreadable` 에
+  "(크기 상한 초과)"로 남겨 `static:` 레이어 오류가 됩니다 (예전엔 2MB 넘는 모듈이 조용히
+  빠지는 우회로였음). 코드가 아닌 텍스트는 2MB 초과 시 스킵. `__pycache__` / `.git` /
+  `node_modules` 등은 스킵
 - Python 파싱 실패는 **무시**합니다 — 오래된 sdist에 Python 2 코드가 남아있는 건 흔하고,
   파싱 안 된다는 사실 자체는 증거가 아닙니다
 - 결과는 심각도 내림차순 정렬 → API가 앞에서부터 잘라 `verdict_reasons`로 쓰면 됩니다
@@ -141,7 +147,10 @@ AstRule  = (ctx, tree) -> findings   # 파싱 성공한 Python 모듈만
 | `custom-install-hook` | `cmdclass`로 `install`/`develop` 가로채기 | CWE-94 | **high** |
 | `custom-install-hook` | `cmdclass`로 `sdist`/`bdist_wheel` 등 빌드 명령 | CWE-94 | medium |
 | `custom-obfuscated-payload` | 디코딩 결과 → 실행 싱크 | CWE-506 | **high** |
-| `custom-install-time-exec` | 설치·import 시점에 실행되는 코드(setup.py 최상단·설치 훅·그들이 부르는 함수와 로컬 모듈, 패키지 모듈 최상단) 안의 **네트워크 송수신** 또는 **수상한 명령 실행**(숨김 PowerShell·인코딩 명령·curl/wget·pythonw 등) | CWE-506 | **high** |
+| `custom-install-time-exec` | 설치·import 시점에 실행되는 코드(setup.py 최상단·설치 훅, 패키지 모듈 최상단, 그리고 거기서 **실제로 실행되는** 다른 모듈 함수·인스턴스화된 클래스의 `__init__`·메서드·스레드/atexit 에 넘긴 함수·클래스 본문 — `rules/exec_scope.py`) 안의 **네트워크 송수신** 또는 **수상한 명령 실행**(숨김 PowerShell·인코딩 명령·curl/wget·pythonw 등) | CWE-506 | **high** |
+| `custom-entrypoint-exec` | 콘솔 스크립트 진입점(`[project.scripts]`·`entry_points`)이 **수상한 명령**을 실행 (네트워크는 CLI 에서 정상이라 보지 않음) | CWE-506 | **high** |
+| `custom-new-behavior` | 아래 spawn 또는 HIGH 행위가 **직전 릴리스에 없다가** 이번에 처음 나타남 (`version_diff.py`, 스캔 파이프라인이 붙임) | 원 finding | **high** |
+| `custom-install-time-spawn` | 같은 범위의 프로세스 실행 중 수상 토큰도 없고 평범한 빌드·조사 명령(git·cmake·컴파일러·nvidia-smi·uname …)도 아닌 것 | CWE-78 | medium |
 | `custom-exfil-endpoint` | 토큰이 박힌 Discord 웹훅·Telegram 봇 주소 (위치 무관) | CWE-200 | **high** |
 | `custom-obfuscated-payload` | 200자 이상 인코딩 블롭 리터럴 | CWE-506 | medium |
 | `custom-dangerous-call` | `eval`/`exec` | CWE-95 | medium |
@@ -272,6 +281,19 @@ analyze_path("samples")
 검증용 악성 패턴 샘플은 `samples/` 참고 (전부 무해한 픽스처).
 
 ---
+
+### 직전 릴리스 대비 새 행위 — `version_diff.py`
+
+```python
+extra = await escalate_new_behaviors(ctx, findings, errors=errors)  # 추가할 finding 만
+```
+
+흔한 행위(import 시점 프로세스 실행)도 **기존 패키지의 새 릴리스에 처음** 나타나면 계정 탈취의
+전형이라 HIGH 로 올립니다. 후보 finding 이 있을 때만 업로드 시각 기준 직전 릴리스(철회 제외)를
+받아 커스텀 규칙으로 비교하므로 대부분의 스캔은 추가 다운로드가 없습니다. 첫 릴리스는 비교
+대상이 없어 승격하지 않고, 비교에 실패하면 `errors` 에 `static:` 으로 남깁니다. 행위 이름은
+줄번호가 아니라 "무엇을 했는가"(호출·명령 이름)라 파일 이동·sdist 루트 이름 변경에 흔들리지
+않습니다. 실측은 `docs/eval/py-engine.md`.
 
 ## ⚠️ 알려진 한계 · 다음 작업
 
