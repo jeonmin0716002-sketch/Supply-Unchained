@@ -1,0 +1,20 @@
+# pre-commit 훅 정의 — requirements*.txt 가 바뀐 커밋을 스캔해 block 판정이면 커밋을 막는다.
+#
+# language: system 을 고른 이유 (python 이 아니라):
+#   - 이 프로젝트는 uv 로 돌고 설치 가능한 패키지가 아니다. language: python 은 pre-commit 이
+#     레포를 pip install 하려 하는데, 그러면 훅 환경이 앱 전체 의존성을 따로 설치하는 이중 환경이 된다.
+#   - system 은 스캐너를 이미 준비된 uv 환경(uv.lock 기준)으로 실행한다. 미검증 패키지를 설치하지 않는
+#     원칙도 그대로 지켜진다 — 훅은 정적분석 결과만 읽는다.
+#   - 대신 훅을 실행하는 머신에 uv 가 있어야 하고, 스캐너 체크아웃 위치를 SU_SCANNER_DIR 로 알려줘야 한다
+#     (기본값: 현재 디렉터리). 자세한 사용법은 docs/usage/ci-integration.md 참고.
+#
+# pass_filenames: true 인데 check-file 은 한 번에 파일 하나만 받으므로, 래퍼가 파일마다 한 번씩 호출하고
+# 가장 큰 종료 코드를 돌려준다 (1 = 차단, 2 = 환경 오류 — 둘 다 훅을 실패시킨다).
+- id: su-scan-requirements
+  name: Supply-Unchained requirements gate
+  description: "requirements*.txt 의 패키지를 스캔해 block 판정이 있으면 커밋을 막는다."
+  entry: 'python -c "import os,subprocess,sys; s=os.environ.get(''SU_SCANNER_DIR'',''.''); fs=[os.path.abspath(f) for f in sys.argv[1:]]; rc=max([subprocess.call([''uv'',''run'',''--frozen'',''python'',''-m'',''cli.su_scan'',''check-file'',f],cwd=s) for f in fs] or [0]); sys.exit(rc)"'
+  language: system
+  files: '(^|/)requirements[^/]*\.txt$'
+  pass_filenames: true
+  require_serial: true
