@@ -395,3 +395,121 @@ def test_storage_migrates_old_schema_in_place_and_is_idempotent(tmp_path):
         assert await s.queue(ecosystem="npm") == []
 
     asyncio.run(go())
+
+
+# ── 다중 생태계 ───────────────────────────────────────────────────
+
+class _FakeProject:
+    def __init__(self, latest):
+        self.latest = latest
+
+
+class _FakeAdapter:
+    """ecosystems.base.Ecosystem 중 감시기가 쓰는 부분만 흉내낸다."""
+
+    has_feed = True
+    registry_label = "FakeReg"
+
+    def __init__(self, items, gone=()):
+        self.items, self.gone = items, set(gone)
+
+    async def fetch_feed(self, client):
+        return list(self.items), []
+
+    async def fetch_project(self, name, *, client):
+        if name in self.gone:
+            raise PackageNotFound(f"{name} is not on FakeReg (never existed, or removed)")
+        return _FakeProject("1.0.0")
+
+    def validate(self, name, version):
+        if name.startswith("bad"):
+            raise ValueError("bad name")
+
+
+class _EcoScan(_Fake):
+    async def scan(self, req, *, http, store):
+        eco = getattr(req.ecosystem, "value", req.ecosystem)
+        spec = f"{eco}:{req.name}=={req.version}"
+        self.scanned.append(spec)
+        verdict = self.verdicts.get(req.name, ("safe", 5, 0.1))[0]
+        record = _record(req.name, req.version, verdict, 50, 0)
+        record["ecosystem"] = eco
+        if req.name in self.gone_at_scan:
+            record["layer_errors"] = [f"static: {req.name} is not on FakeReg (removed)"]
+        record["scan_id"] = await store.insert({**record, "scanned_at": "t"})
+        await store.finalize(record["scan_id"], record)
+        return _Result(record)
+
+
+async def _multi(fake, store, adapters, **kw):
+    return await run_cycle(
+        http=None, store=store, scan=fake.scan, fetch=fake.fetch, resolve=fake.resolve,
+        ecosystems=("pip", "npm"), adapters=adapters, **kw,
+    )
+
+
+async def test_cycle_watches_several_ecosystems_and_keeps_them_apart(store):
+    fake = _EcoScan([("same", "1.0")], verdicts={"evil": ("block", 90, 0.1)})
+    npm = _FakeAdapter([("same", "1.0"), ("evil", "2.0"), ("bad-x", "1.0")])
+    report = await _multi(fake, store, {"npm": npm})
+    assert sorted(fake.scanned) == ["npm:evil==2.0", "npm:same==1.0", "pip:same==1.0"]
+    assert report.skipped_invalid == ["bad-x==1.0"]
+    assert report.by_ecosystem["npm"]["flagged"] == 1
+    [q] = await store.queue("new", ecosystem="npm")
+    assert (q["ecosystem"], q["name"]) == ("npm", "evil")
+    assert await store.queue(ecosystem="pip") == []
+    # 같은 이름·버전이라도 생태계가 다르면 서로 본 것으로 치지 않는다
+    assert await store.unseen([("same", "1.0")], "cargo") == [("same", "1.0")]
+
+
+async def test_scan_budget_is_per_ecosystem(store):
+    fake = _EcoScan([(f"p{i}", "1.0") for i in range(5)])
+    npm = _FakeAdapter([(f"n{i}", "1.0") for i in range(5)])
+    report = await _multi(fake, store, {"npm": npm}, max_scans=2)
+    assert report.by_ecosystem["pip"]["scanned"] == 2
+    assert report.by_ecosystem["npm"]["scanned"] == 2  # npm 이 pip 몫을 먹지 않는다
+    assert report.deferred == 6
+
+
+async def test_removed_detection_works_for_any_registry_and_is_per_ecosystem(store):
+    fake, clock, missing = _EcoScan([], gone_at_scan={"evil"}), _Clock(), {}
+    npm = _FakeAdapter([("evil", "1.0")])
+    await _multi(fake, store, {"npm": npm}, missing=missing, clock=clock)
+    assert missing == {"npm:evil": ("1.0", 1000.0)}
+    clock.t += MISSING_GRACE
+    report = await _multi(fake, store, {"npm": npm}, missing=missing, clock=clock)
+    assert report.removed == ["npm:evil"]
+    [q] = await store.queue("new")
+    assert (q["ecosystem"], q["verdict"]) == ("npm", "removed")
+
+
+async def test_new_project_not_found_by_adapter_is_rechecked_after_grace(store):
+    fake, clock, missing = _EcoScan([]), _Clock(), {}
+    npm = _FakeAdapter([("ghost", None)], gone={"ghost"})
+    report = await _multi(fake, store, {"npm": npm}, missing=missing, clock=clock)
+    assert report.removed == [] and report.missing == 1
+    clock.t += MISSING_GRACE
+    npm.items = []
+    report = await _multi(fake, store, {"npm": npm}, missing=missing, clock=clock)
+    assert report.removed == ["npm:ghost"] and missing == {}
+
+
+async def test_ecosystem_without_feed_or_adapter_is_reported_not_crashing(store):
+    fake = _EcoScan([])
+    nofeed = _FakeAdapter([])
+    nofeed.has_feed = False
+    report = await run_cycle(
+        http=None, store=store, scan=fake.scan, fetch=fake.fetch, resolve=fake.resolve,
+        ecosystems=("pip", "go", "nuget"), adapters={"go": nofeed},
+    )
+    assert len(report.feed_errors) == 2
+
+
+def test_queue_api_filters_by_ecosystem(client):
+    npm = _record("evil", "1.0", "block", 90, 1)
+    npm["ecosystem"] = "npm"
+    _seed(client, npm, _record("pipevil", "1.0", "block", 90, 2))
+    rows = client.get("/api/v1/watch/queue").json()
+    assert {r["ecosystem"] for r in rows} == {"npm", "pip"}
+    only = client.get("/api/v1/watch/queue", params={"ecosystem": "npm"}).json()
+    assert [r["name"] for r in only] == ["evil"]
