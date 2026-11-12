@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 
 from api.schemas import ScanRequest, Severity, StaticFinding
 from common.pypi import PackageContext
-from engine.rules import AST_RULES, FILE_RULES, FileContext
+from engine.rules import AST_RULES, FILE_RULES, ONE_PER_LOCATION, FileContext
 from engine.rules.base import DiskTree, MemoryTree, SourceTree
 
 #: Files larger than this are skipped — packaged data blobs, not source.
@@ -127,7 +127,22 @@ def analyze_tree(
             findings.extend(ast_rule(ctx, module))
 
     findings.sort(key=lambda f: (_SEVERITY_ORDER[f.severity], f.location, f.rule))
-    return findings
+    return _one_per_location(findings)
+
+
+def _one_per_location(findings: list[StaticFinding]) -> list[StaticFinding]:
+    """범위를 파일 너머로 따라가는 규칙은 같은 줄에 여러 시작 파일에서 닿는다 — 가장 심각한
+    것 하나만 남긴다 (정렬 후라 처음 본 것이 가장 심각하다)."""
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for f in findings:
+        if f.rule in ONE_PER_LOCATION:
+            key = (f.rule, f.location)
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(f)
+    return out
 
 
 def analyze_path(root: str | Path, *, unreadable: list[str] | None = None) -> list[StaticFinding]:

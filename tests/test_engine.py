@@ -816,3 +816,107 @@ def test_local_module_finding_points_at_the_module_not_setup_py():
     }
     [f] = [f for f in analyze_files(files) if f.rule == RULE_INSTALL_TIME]
     assert f.location == "p-1/helper.py:3"
+
+
+# ── import 시점 범위 확장 — 파일 경계를 넘는 실행 경로 (탈취 패키지 실측 구조) ──────
+
+_NET = "import requests\n"
+_INIT = {"p-1/setup.py": ""}
+
+
+def _install_time_locations(files: dict[str, str]) -> set[str]:
+    roots = {k.split("/")[0] for k in files if k.endswith("/setup.py")}
+    files = {**{f"{r}/PKG-INFO": "Name: p" for r in roots}, **files}
+    return {f.location for f in analyze_files(files)
+            if f.rule == RULE_INSTALL_TIME and f.severity is Severity.HIGH}
+
+
+@pytest.mark.parametrize(
+    ("files", "where"),
+    [
+        # 상대 import 한 형제 모듈의 함수를 최상단에서 부른다
+        ({**_INIT, "p-1/pkg/__init__.py": "from .util import boot\nboot()\n",
+          "p-1/pkg/util.py": _NET + "def boot():\n    requests.post('http://x')\n"},
+         "p-1/pkg/util.py:3"),
+        # memoryos 2.0.34 구조 — 모든 모듈의 logger = get_logger() → 다른 모듈 → 또 다른 모듈
+        ({**_INIT, "p-1/memos/__init__.py": "",
+          "p-1/memos/core.py": "from memos.log import get_logger\nlogger = get_logger(__name__)\n",
+          "p-1/memos/log.py": "def configure():\n    from memos._stage0 import trigger\n"
+                              "    trigger()\ndef get_logger(n):\n    configure()\n    return n\n",
+          "p-1/memos/_stage0.py": _NET + "def trigger():\n    requests.get('http://x')\n"},
+         "p-1/memos/_stage0.py:3"),
+        # 패키지 __init__ 의 재수출을 거쳐 부른다
+        ({**_INIT, "p-1/pkg/__init__.py": "from .impl import go\n",
+          "p-1/pkg/mod.py": "from pkg import go\ngo()\n",
+          "p-1/pkg/impl.py": _NET + "def go():\n    requests.get('http://x')\n"},
+         "p-1/pkg/impl.py:3"),
+        # 최상단 인스턴스화 → __init__ → self 메서드
+        ({**_INIT, "p-1/pkg/__init__.py": _NET + "class C:\n    def __init__(self):\n"
+          "        self._load()\n    def _load(self):\n        requests.get('http://x')\n"
+          "client = C()\n"},
+         "p-1/pkg/__init__.py:6"),
+        # 최상단 인스턴스의 메서드 호출 (다른 모듈의 클래스)
+        ({**_INIT, "p-1/pkg/__init__.py": "from .svc import Svc\ns = Svc()\ns.start_up()\n",
+          "p-1/pkg/svc.py": _NET + "class Svc:\n    def start_up(self):\n"
+          "        requests.get('http://x')\n"},
+         "p-1/pkg/svc.py:4"),
+        # lightning 2.6.2 구조 — 스레드에 넘긴 함수
+        ({**_INIT, "p-1/pkg/__init__.py": "import threading\n" + _NET +
+          "def _run():\n    requests.get('http://x')\n"
+          "threading.Thread(target=_run, daemon=True).start()\n"},
+         "p-1/pkg/__init__.py:4"),
+        # 종료 훅 — 호출형·데코레이터형
+        ({**_INIT, "p-1/pkg/__init__.py": "import atexit\n" + _NET +
+          "def _bye():\n    requests.post('http://x')\natexit.register(_bye)\n"},
+         "p-1/pkg/__init__.py:4"),
+        ({**_INIT, "p-1/pkg/__init__.py": "import atexit\n" + _NET +
+          "@atexit.register\ndef _bye():\n    requests.post('http://x')\n"},
+         "p-1/pkg/__init__.py:5"),
+        # Thread 하위 클래스의 start() → run()
+        ({**_INIT, "p-1/pkg/__init__.py": "import threading\n" + _NET +
+          "class W(threading.Thread):\n    def run(self):\n        requests.get('http://x')\n"
+          "W().start()\n"},
+         "p-1/pkg/__init__.py:5"),
+        # 클래스 본문은 정의(= import) 순간 실행된다
+        ({**_INIT, "p-1/pkg/__init__.py": _NET + "class Cfg:\n    T = requests.get('http://x')\n"},
+         "p-1/pkg/__init__.py:3"),
+        # setup.py 가 상대 경로 없이 src/ 의 패키지 함수를 부른다
+        ({"p-1/setup.py": "from mypkg.boot import go\ngo()\n", "p-1/src/mypkg/__init__.py": "",
+          "p-1/src/mypkg/boot.py": _NET + "def go():\n    requests.get('http://x')\n"},
+         "p-1/src/mypkg/boot.py:3"),
+    ],
+)
+def test_import_time_scope_follows_real_execution_paths(files, where):
+    assert where in _install_time_locations(files)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # 다른 모듈에 함수가 있어도 import 시점에 부르지 않으면 범위 밖
+        {**_INIT, "p-1/pkg/__init__.py": "from .util import fetch\n",
+         "p-1/pkg/util.py": _NET + "def fetch():\n    return requests.get('http://x')\n"},
+        # 인스턴스화하지 않은 클래스, 부르지 않은 메서드
+        {**_INIT, "p-1/pkg/__init__.py": "from .svc import Svc\ns = Svc()\n",
+         "p-1/pkg/svc.py": _NET + "class Svc:\n    def fetch(self):\n"
+                                  "        return requests.get('http://x')\n"},
+        # 실행해 주지 않는 곳에 넘긴 함수 (콜백 등록) — 이벤트가 올 때 돈다
+        {**_INIT, "p-1/pkg/__init__.py": "import signal\n" + _NET +
+         "def _h(*a):\n    requests.get('http://x')\nsignal.signal(signal.SIGTERM, _h)\n"},
+        # 데코레이터 안의 래퍼 함수는 장식된 함수를 부를 때 돈다
+        {**_INIT, "p-1/pkg/__init__.py": _NET + "def retry(fn):\n    def w(*a):\n"
+         "        requests.get('http://x')\n        return fn(*a)\n    return w\n"
+         "@retry\ndef api():\n    pass\n"},
+    ],
+)
+def test_import_time_scope_does_not_widen_to_any_function(files):
+    assert _install_time_locations(files) == set()
+
+
+def test_cross_module_finding_is_reported_once():
+    """같은 함수를 여러 모듈이 부르면 위치 하나로 한 번만 보고한다 (memoryos: 수백 모듈)."""
+    files = {**_INIT, "p-1/pkg/__init__.py": "",
+             **{f"p-1/pkg/m{i}.py": "from pkg.log import get\nget()\n" for i in range(5)},
+             "p-1/pkg/log.py": _NET + "def get():\n    requests.get('http://x')\n"}
+    hits = [f for f in analyze_files(files) if f.rule == RULE_INSTALL_TIME]
+    assert [f.location for f in hits] == ["p-1/pkg/log.py:3"]
