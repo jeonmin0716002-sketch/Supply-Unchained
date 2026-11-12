@@ -568,3 +568,17 @@ def test_live_toml_registry():
 
 
 # ruff: noqa: E501
+
+
+def test_default_client_reference_is_not_network_but_call_is():
+    ref = 'package m\nimport "net/http"\nvar c = http.DefaultClient\n'
+    assert rules_of(mod({"m.go": ref})) == {}
+    call = 'package m\nimport "net/http"\nfunc init() { http.DefaultClient.Get("http://x.y") }\n'
+    assert rules_of(mod({"m.go": call})) == {"go-init-network": "medium"}
+
+
+def test_go_generate_flag_like_enc_option_is_not_powershell_encoding():
+    gen = "package m\n//go:generate go run github.com/fjl/gencodec -enc=false -type T\n"
+    assert rules_of(mod({"m.go": gen})) == {}
+    bad = "package m\n//go:generate powershell -enc AAAA\n"
+    assert rules_of(mod({"m.go": bad})) == {"go-generate-command": "medium"}

@@ -142,7 +142,7 @@ _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh"})
 
 #: 정상 빌드가 돌릴 이유가 없는 명령·옵션 (curl·wget 은 네트워크로 따로 센다)
 _SUSPICIOUS_CMD = re.compile(
-    r"powershell|pwsh|-enc(?:odedcommand)?\b|windowstyle\s+hidden|-w\s+hidden|mshta|certutil"
+    r"powershell|pwsh|-enc(?:odedcommand)?(?:\s|$)|windowstyle\s+hidden|-w\s+hidden|mshta|certutil"
     r"|bitsadmin|rundll32|regsvr32|invoke-webrequest|\biwr\b|invoke-expression|\biex\b"
     r"|/dev/tcp|\bnc\s+-e|base64\s+-d|\|\s*(?:ba)?sh\b|schtasks|crontab|reg\s+add",
     re.IGNORECASE,

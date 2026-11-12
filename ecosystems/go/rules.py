@@ -63,8 +63,7 @@ _SEV_ORDER = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severi
 
 #: 실제로 패킷을 내보내는 (import 경로, 함수·심볼). 타입 이름만 쓰는 것은 통신이 아니다.
 _NETWORK = {
-    "net/http": {"Get", "Post", "PostForm", "Head", "NewRequest", "NewRequestWithContext",
-                 "DefaultClient"},
+    "net/http": {"Get", "Post", "PostForm", "Head", "NewRequest", "NewRequestWithContext"},
     "net": {"Dial", "DialTimeout", "DialTCP", "DialUDP", "DialIP", "DialUnix", "LookupHost",
             "LookupIP", "LookupAddr", "LookupCNAME", "LookupMX", "LookupNS", "LookupTXT",
             "LookupSRV", "LookupPort", "ResolveTCPAddr", "ResolveUDPAddr", "ResolveIPAddr"},
@@ -73,7 +72,6 @@ _NETWORK = {
     "net/rpc": {"Dial", "DialHTTP", "DialHTTPPath"},
     "net/textproto": {"Dial"},
     "golang.org/x/net/websocket": {"Dial", "DialConfig"},
-    "github.com/gorilla/websocket": {"DefaultDialer"},
 }
 _EXEC = {
     "os/exec": {"Command", "CommandContext"},
@@ -86,7 +84,7 @@ _ORDINARY = frozenset({"git", "go", "gcc", "cc", "clang", "pkg-config", "uname",
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh"})
 
 _SUSPICIOUS_CMD = re.compile(
-    r"powershell|pwsh|-enc(?:odedcommand)?\b|windowstyle\s+hidden|-w\s+hidden|mshta|certutil"
+    r"powershell|pwsh|-enc(?:odedcommand)?(?:\s|$)|windowstyle\s+hidden|-w\s+hidden|mshta|certutil"
     r"|bitsadmin|rundll32|regsvr32|invoke-webrequest|\biwr\b|invoke-expression|\biex\b"
     r"|/dev/tcp|\bnc\s+-e|bash\s+-i|base64\s+-d|\|\s*(?:ba)?sh\b|schtasks|crontab|reg\s+add",
     re.IGNORECASE,
@@ -124,6 +122,7 @@ _COLLECTOR = re.compile(
 )
 _RAW_IP_URL = re.compile(r"https?://(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])")
 
+_CLIENT_CALL = re.compile(r"\s*\.\s*(?:Do|Get|Post|PostForm|Head)\s*\(")
 _CALL = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)")
 _LOCAL_CALL = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
 _STR = re.compile(r'"((?:[^"\\\n]|\\.)*)"|`([^`]*)`')
@@ -203,6 +202,9 @@ def scan_scope(rel: str, fs: FileScan, text: str, sk: str, base: int, facts: Fac
             continue
         if attr in _NETWORK.get(path, ()):
             facts.network.append((rel, line(m.start()), f"{path}.{attr}"))
+        if path == "net/http" and attr == "DefaultClient" and _CLIENT_CALL.match(text, m.end()):
+            # 변수에 담기만 하면 통신이 아니다 — DefaultClient.Get(...) 처럼 호출해야 나간다
+            facts.network.append((rel, line(m.start()), "net/http.DefaultClient"))
         if attr in _EXEC.get(path, ()):
             facts.any_exec = True
             _record_exec(rel, fs, text, sk, base, m, path, attr, facts)
