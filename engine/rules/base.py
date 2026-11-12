@@ -38,6 +38,9 @@ class DiskTree:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._files: list[str] | None = None
+        # 범위 추적이 다른 모듈을 읽으므로 같은 파일을 여러 번 연다. Windows 에서는 여는 것
+        # 자체가 백신 검사로 느리다 (실측: google-genai 파일 하나 여는 데 평균 13ms).
+        self._text: dict[str, str | None] = {}
 
     def files(self) -> list[str]:
         if self._files is None:
@@ -54,10 +57,13 @@ class DiskTree:
 
     def read(self, relpath: str) -> str | None:
         """읽기 실패는 None — 백신 차단(Windows: OSError 22)도 여기로 온다."""
-        try:
-            return (self.root / relpath).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return None
+        if relpath not in self._text:
+            try:
+                self._text[relpath] = (self.root / relpath).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError:
+                self._text[relpath] = None
+        return self._text[relpath]
 
 
 class MemoryTree:

@@ -196,7 +196,7 @@ def _hook_classes(tree: ast.Module) -> list[ast.ClassDef]:
 def _seed_module(ctx: FileContext, tree: ast.Module) -> tuple[ModuleIndex, Module]:
     index = ModuleIndex.of(ctx.tree)
     mod = index.module(ctx.relpath, tree) if ctx.tree is not None else None
-    if mod is None or mod.tree is not tree:  # 트리 없이 파일 하나만 볼 때
+    if mod is None:  # 트리 없이 파일 하나만 볼 때
         name = PurePosixPath(ctx.relpath).stem
         mod = Module(relpath=ctx.relpath, tree=tree, name=name,
                      root=PurePosixPath(ctx.relpath).parent, is_pkg=False)

@@ -23,6 +23,7 @@ from api.schemas import ScanRequest, Severity, StaticFinding
 from common.pypi import PackageContext
 from engine.rules import AST_RULES, FILE_RULES, ONE_PER_LOCATION, FileContext
 from engine.rules.base import DiskTree, MemoryTree, SourceTree
+from engine.rules.exec_scope import ModuleIndex
 
 #: 코드가 아닌 텍스트(.txt·.toml·.cfg ...)는 이보다 크면 건너뛴다 — 묶음 데이터다.
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -133,6 +134,7 @@ def analyze_tree(
     """
     findings: list[StaticFinding] = []
     root = base or Path(".")
+    index = ModuleIndex.of(tree)  # 범위 추적이 먼저 파싱해 둔 모듈을 다시 파싱하지 않는다
 
     for rel in _candidates(tree, unreadable):
         text = tree.read(rel)
@@ -148,7 +150,7 @@ def analyze_tree(
         if ctx.suffix != ".py":
             continue
         try:
-            module = ast.parse(ctx.text, filename=rel)
+            module = index.parsed(rel) or ast.parse(ctx.text, filename=rel)
         except (SyntaxError, ValueError):
             # Not necessarily malicious (Python 2 leftovers are common in old
             # sdists), and an unparseable file is not evidence on its own.

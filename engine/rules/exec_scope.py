@@ -31,7 +31,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from engine.rules.base import SourceTree, dotted_name, import_aliases, resolve_name
+from engine.rules.base import SourceTree, dotted_name, resolve_name
 
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -175,6 +175,11 @@ class ModuleIndex:
                 tree._su_module_index = idx  # type: ignore[attr-defined]
         return idx
 
+    def parsed(self, relpath: str) -> ast.Module | None:
+        """이미 파싱해 둔 모듈 — 분석기가 같은 파일을 다시 읽고 파싱하지 않게."""
+        mod = self._mods.get(relpath)
+        return mod.tree if mod is not None else None
+
     def has(self, relpath: str) -> bool:
         return relpath in self._files
 
@@ -223,20 +228,32 @@ class ModuleIndex:
 
 
 def _module_aliases(tree: ast.Module, modname: str, is_pkg: bool) -> dict[str, str]:
-    """import 별칭을 **절대** 점 이름으로 — 상대 import(``from .x import f``)도 푼다."""
-    out = import_aliases(tree)
+    """import 별칭을 **절대** 점 이름으로 — 상대 import(``from .x import f``)도 푼다.
+
+    base.import_aliases 와 같은 규칙에 상대 import 를 더해 한 번의 순회로 한다 (큰 생성
+    모듈 — google-genai types.py — 에서 순회 횟수가 분석 시간의 대부분이었다).
+    """
+    out: dict[str, str] = {}
     pkg = modname.split(".") if is_pkg else modname.split(".")[:-1]
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.ImportFrom) and node.level):
-            continue
-        up = node.level - 1
-        if up > len(pkg):
-            continue
-        base = pkg[: len(pkg) - up] + ([node.module] if node.module else [])
-        prefix = ".".join(p for p in base if p)
-        for a in node.names:
-            if a.name != "*":
-                out[a.asname or a.name] = f"{prefix}.{a.name}" if prefix else a.name
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                top = a.name.split(".")[0]
+                out[a.asname or top] = a.name if a.asname else top
+        elif isinstance(node, ast.ImportFrom):
+            if not node.level:
+                if node.module:
+                    for a in node.names:
+                        out[a.asname or a.name] = f"{node.module}.{a.name}"
+                continue
+            up = node.level - 1
+            if up > len(pkg):
+                continue
+            base = pkg[: len(pkg) - up] + ([node.module] if node.module else [])
+            prefix = ".".join(p for p in base if p)
+            for a in node.names:
+                if a.name != "*":
+                    out[a.asname or a.name] = f"{prefix}.{a.name}" if prefix else a.name
     return out
 
 
