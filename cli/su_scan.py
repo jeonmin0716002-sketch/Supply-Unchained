@@ -12,6 +12,8 @@ pip 앞단에서 스캔을 태우는 두 가지 진입점 중 "명시 호출" �
     uv run python -m cli.su_scan check reqeusts            # 버전 생략 → 최신 버전 조회
     uv run python -m cli.su_scan install requests==2.31.0  # 스캔 통과 시에만 pip install
     uv run python -m cli.su_scan history                   # 최근 스캔 이력
+    uv run python -m cli.su_scan check npm:lodash@4.17.21  # 다른 생태계 (접두사)
+    uv run python -m cli.su_scan check -e cargo serde@1.0.200
 
 환경변수:
     SU_API_URL       설정하면 그 주소의 API 서버를 호출한다 (미설정 시 로컬 실행).
@@ -49,7 +51,10 @@ for _stream in (sys.stdout, sys.stderr):
     ) not in ("utf8", "utf8sig"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
-app = typer.Typer(help="Supply-Unchained — pip 설치 전 공급망 스캔", no_args_is_help=True)
+app = typer.Typer(
+    help="Supply-Unchained — 설치 전 오픈소스 공급망 스캔 (pip 외 생태계는 -e/접두사)",
+    no_args_is_help=True,
+)
 console = Console()
 
 DEFAULT_API = "http://localhost:8000"
@@ -89,7 +94,7 @@ def _run_local(coro):
     return asyncio.run(coro)
 
 
-def _scan_local(name: str, version: str) -> dict:
+def _scan_local(name: str, version: str, ecosystem: str = "pip") -> dict:
     """API 서버 없이 스캔 파이프라인을 이 프로세스에서 직접 돌린다.
 
     api.routers.scan.run_scan 은 FastAPI 핸들러가 아니라 순수 함수라 그대로 부를 수 있다
@@ -101,7 +106,7 @@ def _scan_local(name: str, version: str) -> dict:
     from api.storage import ScanStore
 
     try:
-        req = ScanRequest(name=name, version=version)
+        req = ScanRequest(ecosystem=ecosystem, name=name, version=version)
     except ValueError as exc:
         # 서버 경로의 422 에 대응하는 자리. 화이트리스트 검증(api/schemas.py)은
         # 로컬 실행에서도 똑같이 걸려야 한다.
@@ -122,11 +127,11 @@ def _scan_local(name: str, version: str) -> dict:
     return _run_local(_go())
 
 
-def _scan_remote(name: str, version: str) -> dict:
+def _scan_remote(name: str, version: str, ecosystem: str = "pip") -> dict:
     try:
         resp = httpx.post(
             f"{_api_url()}/api/v1/scan",
-            json={"ecosystem": "pip", "name": name, "version": version},
+            json={"ecosystem": ecosystem, "name": name, "version": version},
             timeout=_TIMEOUT,
         )
     except httpx.HTTPError as exc:
@@ -149,8 +154,82 @@ def _scan_remote(name: str, version: str) -> dict:
     return resp.json()
 
 
-def _scan(name: str, version: str) -> dict:
-    return _scan_remote(name, version) if _use_server() else _scan_local(name, version)
+def _scan(name: str, version: str, ecosystem: str = "pip") -> dict:
+    if ecosystem == "pip":  # 기존 호출 모양 유지 (테스트가 두 인자 호출을 가로챈다)
+        return _scan_remote(name, version) if _use_server() else _scan_local(name, version)
+    if _use_server():
+        return _scan_remote(name, version, ecosystem)
+    return _scan_local(name, version, ecosystem)
+
+
+def _known_ecosystems() -> tuple[str, ...]:
+    from ecosystems import KNOWN_IDS
+
+    return KNOWN_IDS
+
+
+def _check_ecosystem(ecosystem: str) -> str:
+    eco = ecosystem.strip().lower()
+    if eco not in _known_ecosystems():
+        console.print(
+            f"[red]알 수 없는 생태계:[/red] {ecosystem!r} "
+            f"(지원: {', '.join(_known_ecosystems())})"
+        )
+        raise typer.Exit(code=2)
+    return eco
+
+
+def _parse_target(spec: str, ecosystem: str = "pip") -> tuple[str, str, str | None]:
+    """``[eco:]name[==version|@version]`` → (ecosystem, name, version|None).
+
+    접두사는 알려진 생태계 식별자일 때만 떼어낸다 — Maven 의 ``group:artifact`` 도 콜론을
+    쓰기 때문이다. 버전 구분자는 pip 이 ``==``, 나머지는 ``@`` (npm ``@scope/name`` 의 맨 앞
+    ``@`` 는 이름의 일부라 마지막 ``@`` 만 본다). ``==`` 는 어느 생태계에서나 받는다.
+    """
+    spec = spec.strip()
+    head, sep, rest = spec.partition(":")
+    if sep and head.lower() in _known_ecosystems():
+        ecosystem, spec = head.lower(), rest
+    if "==" in spec:
+        name, _, version = spec.partition("==")
+        return ecosystem, name.strip(), version.strip() or None
+    if ecosystem != "pip":
+        at = spec.rfind("@")
+        if at > 0:
+            return ecosystem, spec[:at].strip(), spec[at + 1:].strip() or None
+    return ecosystem, spec, None
+
+
+def _pkg_label(ecosystem: str, name: str, version: str) -> str:
+    return f"{name}=={version}" if ecosystem == "pip" else f"{ecosystem}:{name}@{version}"
+
+
+def _resolve_latest_for(ecosystem: str, name: str) -> str:
+    """버전 생략 시 최신 버전. pip 은 기존 경로, 그 밖은 어댑터의 레지스트리 조회."""
+    if ecosystem == "pip":
+        return _resolve_latest(name)
+    import ecosystems
+
+    try:
+        eco = ecosystems.get(ecosystem)
+        eco.validate(name, "0")  # URL 을 조립하기 전에 이름부터 화이트리스트로 자른다
+    except (LookupError, ValueError) as exc:
+        console.print(f"[red]잘못된 요청:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    async def _go():
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as http:
+            return await eco.fetch_project(name, client=http)
+
+    try:
+        project = _run_local(_go())
+    except Exception as exc:  # 어댑터마다 예외가 다르다 — 메시지로 바꿔 끝낸다
+        console.print(f"[red]최신 버전 조회 실패:[/red] {name} — {exc}")
+        raise typer.Exit(code=2) from exc
+    if not project.latest:
+        console.print(f"[red]최신 버전을 알 수 없습니다:[/red] {name} — 버전을 지정하세요")
+        raise typer.Exit(code=2)
+    return project.latest
 
 
 def _parse_spec(spec: str) -> tuple[str, str | None]:
@@ -185,7 +264,7 @@ def _resolve_latest(name: str) -> str:
 def _render(result: dict) -> None:
     verdict = result["verdict"]
     label, color = _style(verdict)
-    pkg = f"{result['name']}=={result['version']}"
+    pkg = _pkg_label(result.get("ecosystem") or "pip", result["name"], result["version"])
 
     lines = [f"[bold]{pkg}[/bold]   위험도 [bold]{result['risk_score']}[/bold]/100"]
     lines += [f"  · {r}" for r in result["verdict_reasons"]]
@@ -225,13 +304,16 @@ def _render(result: dict) -> None:
 
 @app.command()
 def check(
-    spec: str = typer.Argument(help="패키지 (name 또는 name==version)"),
+    spec: str = typer.Argument(
+        help="패키지 (name, name==version, 또는 npm:lodash@4.17.21 처럼 생태계 접두사)"
+    ),
     as_json: bool = typer.Option(False, "--json", help="원본 JSON 응답 출력"),
+    ecosystem: str = typer.Option("pip", "--ecosystem", "-e", help="생태계 (접두사가 우선)"),
 ) -> None:
     """패키지를 설치하지 않고 스캔만 수행."""
-    name, version = _parse_spec(spec)
-    version = version or _resolve_latest(name)
-    result = _scan(name, version)
+    eco, name, version = _parse_target(spec, _check_ecosystem(ecosystem))
+    version = version or _resolve_latest_for(eco, name)
+    result = _scan(name, version, eco)
 
     if as_json:
         console.print_json(data=result)
@@ -248,7 +330,13 @@ def install(
     yes: bool = typer.Option(False, "--yes", "-y", help="warn 판정도 확인 없이 설치"),
     force: bool = typer.Option(False, "--force", help="block 판정 무시 (권장하지 않음)"),
 ) -> None:
-    """스캔을 통과한 경우에만 실제 pip install 을 실행."""
+    """스캔을 통과한 경우에만 실제 pip install 을 실행 (pip 전용)."""
+    eco, _n, _v = _parse_target(spec)
+    if eco != "pip":
+        # 설치까지 대신하는 것은 pip 뿐이다 — 다른 설치기는 인자 규칙이 제각각이라 잘못
+        # 조립하면 "스캔한 것과 다른 것"을 설치하게 된다. 스캔만 하려면 check 를 쓴다.
+        console.print(f"[red]install 은 pip 전용입니다[/red] — {eco} 는 `check` 로 스캔하세요")
+        raise typer.Exit(code=2)
     name, version = _parse_spec(spec)
     version = version or _resolve_latest(name)
     result = _scan(name, version)
@@ -276,6 +364,10 @@ def install(
 @app.command("check-file")
 def check_file(
     path: str = typer.Argument("requirements.txt", help="requirements 파일 경로"),
+    ecosystem: str = typer.Option(
+        "pip", "--ecosystem", "-e",
+        help="줄에 접두사가 없을 때의 생태계 (pip 이 아니면 name@version 줄을 읽는다)",
+    ),
 ) -> None:
     """requirements.txt 전체를 스캔 — block 이 하나라도 있으면 exit 1.
 
@@ -290,31 +382,29 @@ def check_file(
         console.print(f"[red]파일을 찾을 수 없습니다:[/red] {path}")
         raise typer.Exit(code=2) from None
 
+    default_eco = _check_ecosystem(ecosystem)
     results: list[tuple[str, str, dict]] = []
     skipped: list[str] = []
     for line in lines:
         stripped = line.split("#", 1)[0].strip()
         if not stripped:
             continue
-        if "==" not in stripped:
+        eco, name, version = _parse_target(stripped, default_eco)
+        if not version or (eco == "pip" and "==" not in stripped):
             skipped.append(stripped)
             continue
-        name, version = _parse_spec(stripped)
-        if not version:
-            skipped.append(stripped)
-            continue
-        results.append((name, version, _scan(name, version)))
+        results.append((_pkg_label(eco, name, version), version, _scan(name, version, eco)))
 
     t = Table(title=f"{path} — {len(results)}개 패키지 스캔", title_justify="left")
     for col in ("패키지", "판정", "점수", "사유"):
         t.add_column(col)
     blocked = 0
-    for name, version, r in results:
-        _label, color = _style(r["verdict"])
+    for pkg, _version, r in results:
+        _lbl, color = _style(r["verdict"])
         if r["verdict"] == "block":
             blocked += 1
         t.add_row(
-            f"{name}=={version}",
+            pkg,
             f"[{color}]{r['verdict']}[/{color}]",
             str(r["risk_score"]),
             "; ".join(r.get("verdict_reasons") or []) or "-",
@@ -619,22 +709,41 @@ def guard(
     su_pip: str = typer.Option(
         "", "--su-pip", help="위임할 pip 실행 파일 (기본: 현재 인터프리터의 -m pip)"
     ),
+    su_ecosystem: str = typer.Option(
+        "pip", "--su-ecosystem",
+        help="스캔할 생태계. -e 가 아닌 이유: pip 의 -e(editable)와 겹친다",
+    ),
 ) -> None:
     """`pip install` 인자를 그대로 받아 스캔한 뒤 진짜 pip 에 위임 (셸 래퍼용).
 
     옵션에 ``--su-`` 접두사를 붙인 이유는 pip 의 플래그와 이름이 겹치지 않게 하기 위함이다.
     """
     argv = list(ctx.args)
-    specs, skipped = _extract_specs(argv)
+    guard_eco = _check_ecosystem(su_ecosystem)
+    if guard_eco != "pip" and not su_pip:
+        # 기본 위임 대상은 pip 이다 — npm 스펙을 pip 에 넘기면 엉뚱한 것을 설치한다.
+        console.print("[red]pip 이 아닌 생태계는 --su-pip 로 설치 명령을 지정해야 합니다[/red]")
+        raise typer.Exit(code=2)
+    if guard_eco == "pip":
+        specs, skipped = _extract_specs(argv)
+    else:
+        specs = [a for a in argv if not a.startswith("-")]
+        skipped = []
 
     results: list[tuple[str, str, bool, dict]] = []
     for spec in specs:
-        resolved = _resolve_spec(spec)
-        if resolved is None:
-            skipped.append(spec)
+        if guard_eco == "pip":
+            resolved = _resolve_spec(spec)
+            if resolved is None:
+                skipped.append(spec)
+                continue
+            name, version, exact = resolved
+            results.append((name, version, exact, _scan(name, version)))
             continue
-        name, version, exact = resolved
-        results.append((name, version, exact, _scan(name, version)))
+        eco, name, version = _parse_target(spec, guard_eco)
+        exact = version is not None
+        version = version or _resolve_latest_for(eco, name)
+        results.append((name, version, exact, _scan(name, version, eco)))
 
     if results:
         t = Table(title=f"설치 전 스캔 — {len(results)}개", title_justify="left")
@@ -642,7 +751,9 @@ def guard(
             t.add_column(col)
         for name, version, exact, r in results:
             _label, color = _style(r["verdict"])
-            label = f"{name}=={version}" + ("" if exact else "  [dim](최신 기준)[/dim]")
+            label = _pkg_label(guard_eco, name, version) + (
+                "" if exact else "  [dim](최신 기준)[/dim]"
+            )
             t.add_row(
                 label,
                 f"[{color}]{r['verdict']}[/{color}]",
@@ -657,8 +768,8 @@ def guard(
             f"[yellow]스캔하지 않음[/yellow] (로컬 경로·URL·VCS 등): {', '.join(skipped)}"
         )
 
-    blocked = [f"{n}=={v}" for n, v, _e, r in results if r["verdict"] == "block"]
-    warned = [f"{n}=={v}" for n, v, _e, r in results if r["verdict"] == "warn"]
+    blocked = [_pkg_label(guard_eco, n, v) for n, v, _e, r in results if r["verdict"] == "block"]
+    warned = [_pkg_label(guard_eco, n, v) for n, v, _e, r in results if r["verdict"] == "warn"]
 
     if blocked and not su_force:
         console.print(
@@ -682,6 +793,15 @@ def guard(
     cmd = ([su_pip] if su_pip else [sys.executable, "-m", "pip"]) + ["install", *argv]
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
     raise typer.Exit(code=subprocess.call(cmd))
+
+
+# guarded 연결 지점 (docs/design/multi-ecosystem.md §3.1) — inventory 세션의 project·sbom 명령.
+try:
+    from cli.project_cmd import register as _register_project_cmd
+except ImportError:
+    _register_project_cmd = None
+if _register_project_cmd is not None:
+    _register_project_cmd(app)
 
 
 if __name__ == "__main__":

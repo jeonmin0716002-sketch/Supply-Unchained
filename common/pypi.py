@@ -276,14 +276,56 @@ def extract(data: bytes, filename: str, dest: str | Path) -> Path:
     return dest
 
 
+@dataclass
+class ExtractedArtifact:
+    """한 아카이브를 푼 결과. 파일마다 따로 푼다 — 규칙이 루트 배치에 의존하기 때문이다
+    (wheel 루트의 ``.pth`` 는 인터프리터 시작 시 실행되지만, sdist 안의 같은 파일은 아니다).
+    """
+
+    artifact: Any  # ecosystems.base.Artifact
+    root: Path | None = None
+    #: 아카이브의 **모든** 멤버 이름 (선택 추출로 풀지 않은 파일 포함)
+    names: list[str] = field(default_factory=list)
+    #: 받거나 풀지 못한 사유. None 이 아니면 이 파일은 검사되지 않은 것이다.
+    error: PyPIError | None = None
+    #: 상한 때문에 일부만 풀었으면 그 사유 (None = 분석 대상 파일 전부 풀었음)
+    truncated: str | None = None
+
+    @property
+    def filename(self) -> str:
+        return self.artifact.filename
+
+
+def _as_artifact(art: Any) -> Any:
+    """``common.pypi.Artifact``(구형) 도 받는다 — 프록시·도구가 아직 그 모양을 쓴다."""
+    from ecosystems.base import Artifact as EcoArtifact
+
+    if isinstance(art, EcoArtifact):
+        return art
+    kind = getattr(art, "kind", None) or {"bdist_wheel": "wheel"}.get(
+        getattr(art, "packagetype", ""), getattr(art, "packagetype", "")
+    )
+    return EcoArtifact(
+        filename=art.filename, url=art.url, kind=kind, size=int(getattr(art, "size", 0) or 0)
+    )
+
+
 class PackageContext:
-    """Per-scan PyPI state, fetched once and shared by every layer.
+    """Per-scan registry state, fetched once and shared by every layer.
 
-    Use as an async context manager so the extracted tree is cleaned up::
+    Use as an async context manager so the extracted trees are cleaned up::
 
-        async with PackageContext(name, version) as ctx:
-            findings = await analyze_package(req, ctx=ctx)
-            signals, score = await score_package(req, ctx=ctx)
+        async with PackageContext(name, version, ecosystem="npm") as ctx:
+            for ex in await ctx.extracted_roots():
+                ...
+
+    생태계 무관: 레지스트리 조회·파일 선택·추출은 ``ecosystems.get(ecosystem)`` 어댑터가
+    한다. pip 은 기존 공개 API(``project()`` 가 PyPI JSON 의 ``ProjectData`` 를 돌려주는 것,
+    ``extracted_path()`` 가 루트 하나를 돌려주는 것)를 그대로 유지한다 — engine/·scoring/·
+    tools/ 가 그 모양에 의존한다.
+
+    ``artifacts`` 를 주면 레지스트리가 고르는 대신 **그 파일들만** 스캔한다. 프록시가 "요청된
+    바로 그 파일"을 스캔하는 데 쓴다(스캔한 파일 = 설치되는 파일).
     """
 
     def __init__(
@@ -292,21 +334,28 @@ class PackageContext:
         version: str,
         *,
         client: httpx.AsyncClient | None = None,
+        ecosystem: str = "pip",
+        artifacts: list[Any] | None = None,
     ) -> None:
         self.name = name
         self.version = version
+        self.ecosystem = getattr(ecosystem, "value", ecosystem)
+        self._explicit = [_as_artifact(a) for a in artifacts] if artifacts is not None else None
         self._client = client
         self._owns_client = client is None
         self._project: ProjectData | None = None
         self._project_error: PyPIError | None = None
         self._loaded = False
+        self._model: Any = None
+        self._model_error: PyPIError | None = None
+        self._model_done = False
         self._tmpdir: TemporaryDirectory | None = None
-        self._extracted: Path | None = None
-        self._extract_error: PyPIError | None = None
-        self._extract_done = False
-        # Two locks, not one: fetching the artifact needs the project JSON, so a
-        # single lock would deadlock on itself (asyncio.Lock is not reentrant).
+        self._roots: list[ExtractedArtifact] | None = None
+        self._roots_error: PyPIError | None = None
+        # 락을 나누는 이유: 아티팩트를 고르려면 프로젝트 JSON 이 필요해서, 락 하나로는
+        # 자기 자신을 기다리며 멈춘다 (asyncio.Lock 은 재진입이 안 된다).
         self._project_lock = asyncio.Lock()
+        self._model_lock = asyncio.Lock()
         self._artifact_lock = asyncio.Lock()
 
     async def __aenter__(self) -> PackageContext:
@@ -331,8 +380,20 @@ class PackageContext:
             self._client = new_client()
         return self._client
 
-    async def project(self) -> ProjectData:
-        """The project JSON, fetched at most once. Re-raises the same error."""
+    @property
+    def eco(self) -> Any:
+        """이 스캔의 생태계 어댑터 (``ecosystems.base.Ecosystem``)."""
+        import ecosystems  # 지연 import — ecosystems.base 가 이 모듈을 import 한다
+
+        return ecosystems.get(self.ecosystem)
+
+    async def project(self) -> Any:
+        """pip: PyPI 프로젝트 JSON(``ProjectData``). 그 밖의 생태계: ``model()`` 과 같다.
+
+        한 번만 조회하고, 실패도 캐시해 같은 예외를 다시 던진다.
+        """
+        if self.ecosystem != "pip":
+            return await self.model()
         async with self._project_lock:
             if not self._loaded:
                 self._loaded = True
@@ -345,41 +406,95 @@ class PackageContext:
         assert self._project is not None
         return self._project
 
-    async def extracted_path(self) -> Path | None:
-        """Path to the unpacked artifact, or None if this release has none.
+    async def model(self) -> Any:
+        """공통 ``ecosystems.base.Project`` 모델 (스코어링·버전 비교가 본다)."""
+        async with self._model_lock:
+            if not self._model_done:
+                self._model_done = True
+                try:
+                    if self.ecosystem == "pip":
+                        from ecosystems.pip.registry import to_project
 
-        Downloaded and unpacked at most once. Failures are cached too, so a
-        broken artifact is not re-fetched by the next layer that asks.
+                        self._model = to_project(await self.project())
+                    else:
+                        self._model = await self.eco.fetch_project(self.name, client=self.client)
+                except PyPIError as exc:
+                    self._model_error = exc
+        if self._model_error is not None:
+            raise self._model_error
+        return self._model
+
+    async def previous_version(self) -> str | None:
+        """업로드 시각 기준 직전 버전 (``Project.previous_version``)."""
+        return (await self.model()).previous_version(self.version)
+
+    async def selected_artifacts(self) -> list[Any]:
+        """스캔할 파일들. 명시한 ``artifacts`` 가 있으면 그것, 없으면 어댑터가 고른다."""
+        if self._explicit is not None:
+            return list(self._explicit)
+        return self.eco.select_artifacts(await self.model(), self.version)
+
+    async def extracted_roots(self) -> list[ExtractedArtifact]:
+        """선택된 파일마다 하나씩 푼 루트. 첫 항목이 주(primary) 아티팩트다.
+
+        파일 하나가 실패해도 나머지는 푼다 — 실패는 그 항목의 ``error`` 에 남는다(호출부가
+        "검사하지 못함"으로 보고한다). 아티팩트 목록 자체를 못 얻으면(조회 실패) 예외.
         """
         async with self._artifact_lock:
-            if not self._extract_done:
-                self._extract_done = True
+            if self._roots is None and self._roots_error is None:
                 try:
-                    self._extracted = await self._download_and_extract()
+                    self._roots = await self._download_and_extract_all()
                 except PyPIError as exc:
-                    self._extract_error = exc
-        if self._extract_error is not None:
-            raise self._extract_error
-        return self._extracted
+                    self._roots_error = exc
+        if self._roots_error is not None:
+            raise self._roots_error
+        assert self._roots is not None
+        return self._roots
 
-    async def _download_and_extract(self) -> Path | None:
-        project = await self.project()
-        artifact = select_artifact(project.artifacts(self.version))
-        if artifact is None:
+    async def _download_and_extract_all(self) -> list[ExtractedArtifact]:
+        arts = await self.selected_artifacts()
+        out: list[ExtractedArtifact] = []
+        for index, art in enumerate(arts):
+            if self._tmpdir is None:
+                self._tmpdir = TemporaryDirectory(prefix="su-scan-")
+            dest = Path(self._tmpdir.name) / str(index)
+            item = ExtractedArtifact(artifact=art)
+            try:
+                await self._fetch_one(art, dest, item)
+            except PyPIError as exc:
+                item.error = exc
+                item.root = None
+            out.append(item)
+        return out
+
+    async def _fetch_one(self, art: Any, dest: Path, item: ExtractedArtifact) -> None:
+        data = await download(art, client=self.client)
+        # 추출은 최대 MAX_UNCOMPRESSED_BYTES(200 MB) 를 디스크에 쓰는 동기 작업이라 코루틴에서
+        # 그대로 부르면 이벤트 루프가 멈춘다 — /health 와 프록시 스트리밍까지 함께 죽는다.
+        # 실측으로 /health 가 3.3초까지 밀렸다.
+        root = await asyncio.to_thread(self.eco.extract, data, art, dest)
+        item.root = Path(root)
+        item.names = [
+            p.relative_to(item.root).as_posix() for p in item.root.rglob("*") if p.is_file()
+        ]
+
+    async def extracted_path(self) -> Path | None:
+        """주 아티팩트를 푼 경로. 이 릴리스에 파일이 없으면 None.
+
+        한 번만 받고 풀며, 실패도 캐시한다 — 깨진 아카이브를 다음 레이어가 다시 받지 않는다.
+        """
+        roots = await self.extracted_roots()
+        if not roots:
             return None
-
-        data = await download(artifact, client=self.client)
-        self._tmpdir = TemporaryDirectory(prefix="su-scan-")
-        # extract() 는 최대 MAX_UNCOMPRESSED_BYTES(200 MB) 를 풀어 디스크에 쓰는 동기
-        # 작업이라, 코루틴에서 그대로 부르면 그동안 이벤트 루프가 멈춘다 — 같은 프로세스의
-        # /health 와 프록시 스트리밍까지 함께 죽는다. 실측으로 /health 가 3.3초까지 밀렸다.
-        return await asyncio.to_thread(
-            extract, data, artifact.filename, self._tmpdir.name
-        )
+        if roots[0].error is not None:
+            raise roots[0].error
+        return roots[0].root
 
     async def archive_names(self) -> list[str]:
-        """Flat list of file paths inside the artifact (empty if there is none)."""
-        root = await self.extracted_path()
-        if root is None:
+        """주 아티팩트 안의 파일 경로 목록 (없으면 빈 리스트)."""
+        roots = await self.extracted_roots()
+        if not roots:
             return []
-        return [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
+        if roots[0].error is not None:
+            raise roots[0].error
+        return list(roots[0].names)

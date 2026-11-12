@@ -41,6 +41,7 @@ from bandit.core import config as bandit_config
 from bandit.core import manager as bandit_manager
 from fastapi import APIRouter, HTTPException, Query, Request
 
+import ecosystems
 from api.cwe import finding_from_bandit_issue, tag_vulnerabilities
 from api.schemas import (
     ErrorResponse,
@@ -54,9 +55,16 @@ from api.schemas import (
     VulnSource,
 )
 from api.storage import ScanStore
-from common.pypi import PackageContext, PyPIError
-from engine import CveLookupError, analyze_package, match_package
+from common.pypi import ExtractedArtifact, PackageContext, PyPIError
+from engine import CveLookupError, match_package
+from engine.rules.base import DiskTree
 from scoring.scorer import score_package
+
+# guarded 연결 지점 (docs/design/multi-ecosystem.md §3.1) — py-engine 세션이 만든다.
+try:
+    from engine.version_diff import escalate_new_behaviors
+except ImportError:
+    escalate_new_behaviors = None
 
 router = APIRouter(prefix="/api/v1", tags=["scan"])
 
@@ -98,16 +106,111 @@ async def _layer_cve(
         return []
 
 
+class _TrackedTree:
+    """읽기 실패를 세는 SourceTree 래퍼 — 어댑터가 무엇이든 "못 읽은 파일"이 보고되게 한다.
+
+    실제 악성 파일은 백신이 읽기를 막는 경우가 많다(Windows Defender: OSError 22). 어댑터마다
+    그걸 따로 보고하게 두면 하나만 빠뜨려도 "검사했고 깨끗했다"로 둔갑한다.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._inner = DiskTree(root)
+        self.unreadable: list[str] = []
+
+    def files(self) -> list[str]:
+        return self._inner.files()
+
+    def size(self, relpath: str) -> int:
+        return self._inner.size(relpath)
+
+    def read(self, relpath: str) -> str | None:
+        text = self._inner.read(relpath)
+        if text is None and relpath not in self.unreadable:
+            self.unreadable.append(relpath)
+        return text
+
+
+def _finding_key(f: StaticFinding) -> tuple:
+    return (f.rule, f.location, f.detail)
+
+
+def _strip_top_dir(location: str) -> str:
+    """sdist 는 ``pkg-1.0/`` 아래에 풀리고 wheel 은 루트에 풀린다. 같은 파일의 같은 탐지를
+    중복 판정하지 않도록 비교할 때만 sdist 의 최상위 디렉터리를 뗀다."""
+    head, sep, rest = location.partition("/")
+    return rest if sep and "-" in head else location
+
+
+def _analyze_one(eco, item: ExtractedArtifact) -> tuple[list[StaticFinding], list[str]]:
+    tree = _TrackedTree(item.root)
+    findings = eco.analyze_tree(tree, artifact=item.artifact)
+    return list(findings), tree.unreadable
+
+
+async def _static_findings(
+    req: ScanRequest, ctx: PackageContext, errors: list[str]
+) -> list[StaticFinding]:
+    """선택된 파일마다 따로 푼 루트에 어댑터 규칙을 돌리고 결과를 합친다.
+
+    * 파일 하나라도 받거나 풀지 못했으면 ``static:`` 로 남긴다 — 그 파일이 설치될 수 있다.
+    * sdist·wheel 양쪽의 같은 탐지는 한 번만 남긴다(같은 코드가 두 번 실려 있을 뿐이다).
+    * 주 아티팩트가 아닌 파일의 탐지는 위치 앞에 ``<파일명>!`` 을 붙여 어디서 나왔는지 밝힌다.
+    """
+    eco = ctx.eco
+    roots = await ctx.extracted_roots()
+    if not roots:
+        # 파일이 하나도 없는 릴리스 — 받을 것이 없으니 설치도 안 된다. 다만 "봤다"는 아니다.
+        model = await ctx.model()
+        if model.release(req.version) is None:
+            errors.append(
+                f"static: {req.name} {req.version} 버전이 {eco.registry_label} 에 없어 "
+                "검사하지 못함"
+            )
+        return []
+
+    merged: list[StaticFinding] = []
+    seen: set[tuple] = set()
+    for index, item in enumerate(roots):
+        if item.error is not None:
+            errors.append(f"static: {item.error}" if index == 0 and len(roots) == 1
+                          else f"static: {item.filename}: {item.error}")
+            continue
+        if item.truncated:
+            errors.append(f"static: {item.filename}: {item.truncated}")
+        # 규칙은 순수 CPU 작업 — 코루틴에서 돌리면 gather 로 묶인 다른 레이어와 서버의 다른
+        # 요청이 그동안 멈춘다 (bandit 레이어와 같은 이유).
+        found, unreadable = await asyncio.to_thread(_analyze_one, eco, item)
+        if unreadable:
+            shown = ", ".join(unreadable[:3]) + (" 외" if len(unreadable) > 3 else "")
+            where = f"{item.filename}: " if len(roots) > 1 else ""
+            errors.append(
+                f"static: {where}파일 {len(unreadable)}개를 읽지 못해 검사하지 못함 — "
+                f"백신이 차단했을 수 있음 ({shown})"
+            )
+        for f in found:
+            key = (f.rule, _strip_top_dir(f.location), f.detail)
+            if key in seen:
+                continue
+            seen.add(key)
+            if index > 0:
+                f = f.model_copy(update={"location": f"{item.filename}!{f.location}"})
+            merged.append(f)
+    return merged
+
+
 async def _layer_static(
     req: ScanRequest, ctx: PackageContext, errors: list[str]
 ) -> list[StaticFinding]:
     try:
-        return await analyze_package(req, ctx=ctx, errors=errors)
+        findings = await _static_findings(req, ctx, errors)
     except PyPIError as exc:
         # 패키지가 없거나 아카이브를 못 읽은 경우. "검사하지 못했다"는 사실이
         # "검사했고 깨끗했다"로 보이면 안 되므로 layer_errors 로 남긴다.
         errors.append(f"static: {exc}")
         return []
+    findings.sort(key=lambda f: (-_SEVERITY_ORDER[f.severity], f.location, f.rule))
+    return findings
 
 
 #: Bandit 자체 severity 를 그대로 통과시키면 안 되는 이유: B602(subprocess shell=True)
@@ -275,16 +378,28 @@ async def _layer_bandit(
     req: ScanRequest, ctx: PackageContext, errors: list[str]
 ) -> list[StaticFinding]:
     try:
-        root = await ctx.extracted_path()
-        if not root:
-            return []
-        # 스레드로 내보내야 나머지 세 레이어의 gather 병렬성이 살아있다 — 여기서 동기로
-        # 부르면 bandit 이 끝날 때까지 ①③은 시작조차 못 한다 (BANDIT_BUDGET_SECONDS 주석).
-        findings, truncated = await asyncio.to_thread(
-            _run_bandit, root, BANDIT_BUDGET_SECONDS
-        )
-        if truncated:
-            errors.append(f"bandit: {truncated}")
+        if hasattr(ctx, "extracted_roots"):
+            roots = [(i.filename, i.root) for i in await ctx.extracted_roots() if i.root]
+        else:  # 테스트용 최소 컨텍스트(extracted_path 만 있는 것)
+            root = await ctx.extracted_path()
+            roots = [("", root)] if root else []
+        findings: list[StaticFinding] = []
+        seen: set[tuple] = set()
+        for index, (filename, root) in enumerate(roots):
+            # 스레드로 내보내야 나머지 세 레이어의 gather 병렬성이 살아있다 — 여기서 동기로
+            # 부르면 bandit 이 끝날 때까지 ①③은 시작조차 못 한다 (BANDIT_BUDGET_SECONDS 주석).
+            # 예산은 파일마다 따로다 — wheel 이 sdist 의 남은 예산에 밀려 0초가 되면 안 된다.
+            found, truncated = await asyncio.to_thread(_run_bandit, root, BANDIT_BUDGET_SECONDS)
+            if truncated:
+                errors.append(f"bandit: {filename + ': ' if index else ''}{truncated}")
+            for f in found:
+                key = (f.rule, _strip_top_dir(f.location), f.detail)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if index:
+                    f = f.model_copy(update={"location": f"{filename}!{f.location}"})
+                findings.append(f)
         return findings
     except Exception as exc:  # bandit 내부 예외 계층이 알려져 있지 않아 광범위 캐치
         errors.append(f"bandit: {exc}")
@@ -457,8 +572,26 @@ async def _no_findings() -> list[StaticFinding]:
     return []
 
 
+async def _escalate(
+    ctx: PackageContext, findings: list[StaticFinding], errors: list[str]
+) -> list[StaticFinding]:
+    """직전 버전 대비 새 행위 승격 (engine.version_diff — 있으면). 실패는 판정을 막지 않는다."""
+    if escalate_new_behaviors is None or ctx.ecosystem != "pip":
+        return []
+    try:
+        return list(await escalate_new_behaviors(ctx, findings, errors=errors))
+    except Exception as exc:  # 부가 레이어 — 내부 예외 계층을 모른다
+        errors.append(f"static: 버전 비교 실패 — {exc}")
+        return []
+
+
 async def run_scan(
-    req: ScanRequest, *, http: httpx.AsyncClient, store: ScanStore, bandit: bool = True
+    req: ScanRequest,
+    *,
+    http: httpx.AsyncClient,
+    store: ScanStore,
+    bandit: bool = True,
+    artifacts: list | None = None,
 ) -> ScanResponse:
     """통합 스캔.
 
@@ -466,28 +599,39 @@ async def run_scan(
     MEDIUM 으로 상한이 걸려(_BANDIT_SEVERITY_CAP) block 을 만들지 못하므로, block 과
     이름 유사도만 보는 감시 큐 기준에 기여하지 않는다. 그런데 가장 느린 레이어다
     (실측: 5개 패키지 15.9초 → 10.0초, 판정 동일). 생략했다는 사실은 판정 사유에 남긴다.
+
+    ``artifacts`` 를 주면 레지스트리가 고르는 파일 대신 그 파일만 스캔한다 — 프록시가
+    "pip 이 지금 받으려는 바로 그 파일"을 넘긴다.
     """
     layer_errors: list[str] = []
     notes: list[str] = []
+    eco = ecosystems.get(req.ecosystem.value)
+    # Bandit 은 파이썬 전용 도구다 — 다른 생태계에서 돌리면 아무것도 안 보고 시간만 쓴다.
+    run_bandit = bandit and eco.id == "pip"
     if not bandit:
         notes.append("감시 모드 — Bandit 레이어 생략 (커스텀 규칙·CVE·메타데이터로 판정)")
+    diff_errors: list[str] = []
 
     if OFFLINE_DEMO:
         vulns, findings, (signals, risk_score) = _demo_layers(req)
         notes.append(_DEMO_NOTE)
     else:
-        # 한 요청 = PyPI JSON 1회 + 아카이브 1회. ②③가 같은 컨텍스트를 씁니다.
+        # 한 요청 = 레지스트리 메타데이터 1회 + 파일마다 1회. ②③가 같은 컨텍스트를 씁니다.
         # 앱의 공유 커넥션 풀을 넘기므로 ctx 는 클라이언트를 닫지 않고 임시 디렉터리만
         # 정리합니다. PackageContext 는 내부에 락이 있어 병렬 접근에 안전합니다.
-        async with PackageContext(req.name, req.version, client=http) as ctx:
+        async with PackageContext(
+            req.name, req.version, client=http, ecosystem=eco.id, artifacts=artifacts
+        ) as ctx:
             # 네 레이어는 서로 독립 — 병렬 실행 (①은 OSV, ②②'③은 공유 ctx)
             vulns, findings, bandit_findings, (signals, risk_score) = await asyncio.gather(
                 _layer_cve(req, http, layer_errors),
                 _layer_static(req, ctx, layer_errors),
-                _layer_bandit(req, ctx, layer_errors) if bandit else _no_findings(),
+                _layer_bandit(req, ctx, layer_errors) if run_bandit else _no_findings(),
                 _layer_scoring(req, ctx, layer_errors),
             )
-            findings = findings + bandit_findings
+            # 버전 비교 오류는 따로 모은다 — "직전 버전을 못 받았다"는 이 패키지를 못 봤다는
+            # 뜻이 아니라서, 미검사 판정(_static_gaps)에 섞이면 안 된다.
+            findings = findings + await _escalate(ctx, findings, diff_errors) + bandit_findings
 
         # CWE 태깅 (담당: API 파트) — 취약점별 OSV 재조회로 cwe_ids 를 채운다.
         # 부가 정보라 실패는 조용히 빈 리스트로 남고 판정에는 영향 없음.
@@ -495,6 +639,7 @@ async def run_scan(
 
     verdict, reasons = _decide(vulns, findings, risk_score)
     reasons.extend(notes)
+    layer_errors.extend(diff_errors)
 
     response = ScanResponse(
         scan_id=0,  # insert 후 확정

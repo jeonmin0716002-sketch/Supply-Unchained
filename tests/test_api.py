@@ -171,6 +171,9 @@ def test_static_layer_converts_fetch_error(client, monkeypatch):
 
     실제 ``_layer_static`` 의 변환을 통과시켜야 의미가 있으므로 ①③만 오프라인으로
     대체하고, 엔진 호출만 PyPIError 를 던지게 만든다.
+
+    다중 생태계화 이후 정적 레이어는 engine.analyze_package 대신 어댑터 기반
+    ``scan._static_findings`` 를 부른다 — 그래서 그쪽을 실패시킨다.
     """
 
     async def fake_cve(req, http, errors):
@@ -182,13 +185,13 @@ def test_static_layer_converts_fetch_error(client, monkeypatch):
     async def fake_scoring(req, ctx, errors):
         return SAFE_SIGNALS, 5
 
-    async def boom(req, *, ctx=None, errors=None):
+    async def boom(req, ctx, errors):
         raise PyPIError("ghost-pkg is not on PyPI")
 
     monkeypatch.setattr(scan, "_layer_cve", fake_cve)
     monkeypatch.setattr(scan, "_layer_bandit", fake_bandit)
     monkeypatch.setattr(scan, "_layer_scoring", fake_scoring)
-    monkeypatch.setattr(scan, "analyze_package", boom)
+    monkeypatch.setattr(scan, "_static_findings", boom)
 
     body = client.post("/api/v1/scan", json={"name": "ghost-pkg", "version": "0.0.1"}).json()
     assert any(e.startswith("static:") for e in body["layer_errors"])
