@@ -1158,3 +1158,36 @@ def test_escalate_reports_failure_to_fetch_previous_release():
     assert asyncio.run(vd.escalate_new_behaviors(_ctx(handler), new, errors=errors)) == []
     [msg] = errors
     assert msg.startswith("static: ") and "1.0" in msg
+
+
+# ── 콘솔 스크립트 진입점 ─────────────────────────────────────────────
+
+from engine.rules.install_time import RULE_ENTRYPOINT  # noqa: E402
+
+_PS = "import subprocess\ndef main():\n    subprocess.Popen('powershell -w hidden -enc AAAA')\n"
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"p-1/pyproject.toml": "[project]\nname='p'\n[project.scripts]\np = 'p.cli:main'\n",
+         "p-1/src/p/__init__.py": "", "p-1/src/p/cli.py": _PS},
+        {"p-1/setup.py": "setup(entry_points={'console_scripts': ['p=p.cli:main']})\n",
+         "p-1/p/__init__.py": "", "p-1/p/cli.py": _PS},
+        {"p.dist-info/entry_points.txt": "[console_scripts]\np = p.cli:main\n",
+         "p/__init__.py": "", "p/cli.py": _PS},
+    ],
+)
+def test_entrypoint_running_suspicious_command_is_high(files):
+    hits = [f for f in analyze_files({"p-1/PKG-INFO": "Name: p", **files})
+            if f.rule == RULE_ENTRYPOINT]
+    assert len(hits) == 1 and hits[0].severity is Severity.HIGH
+    assert hits[0].location.endswith("p/cli.py:3")
+
+
+def test_entrypoint_network_call_is_normal():
+    files = {"p-1/PKG-INFO": "Name: p",
+             "p-1/pyproject.toml": "[project.scripts]\np = 'p.cli:main'\n",
+             "p-1/p/__init__.py": "",
+             "p-1/p/cli.py": "import requests\ndef main():\n    requests.get('https://api')\n"}
+    assert not {f.rule for f in analyze_files(files)} & {RULE_ENTRYPOINT, RULE_INSTALL_TIME}

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import re
+import tomllib
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
 
@@ -34,7 +35,14 @@ from engine.rules.base import (
     make_finding,
     resolve_name,
 )
-from engine.rules.exec_scope import Module, ModuleIndex, Reached, Scope, module_level
+from engine.rules.exec_scope import (
+    Module,
+    ModuleIndex,
+    Reached,
+    Scope,
+    body_nodes,
+    module_level,
+)
 
 RULE_INSTALL_TIME = "custom-install-time-exec"
 RULE_EXFIL = "custom-exfil-endpoint"
@@ -340,3 +348,102 @@ def exfil_endpoint(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding
                     detail=f"토큰이 포함된 {label} 주소가 코드에 박혀 있음 — 유출 채널의 전형",
                 )
                 break
+
+
+# ── 콘솔 스크립트 진입점 ──────────────────────────────────────────
+# [project.scripts]·setup(entry_points=...)·entry_points.txt 의 함수는 사용자가 명령을
+# **직접 실행할 때** 돈다. CLI 가 네트워크를 쓰는 건 정상이라(다운로더·API 클라이언트)
+# 네트워크 호출은 보지 않는다. 수상한 명령 실행(숨김 PowerShell, curl|sh 등)만 HIGH 다 —
+# import 시점 규칙과 같은 토큰 목록이고, 정상 상위 300개에서 이 조합이 나온 패키지 수는
+# docs/eval/py-engine.md 에 있다.
+
+RULE_ENTRYPOINT = "custom-entrypoint-exec"
+_ENTRY_FILES = {"pyproject.toml", "setup.cfg", "entry_points.txt", "setup.py"}
+_SPEC = re.compile(r"^\s*([\w.\-]+)\s*=\s*([\w.]+)\s*:\s*([\w.]+)")
+
+
+def _entry_specs(ctx: FileContext) -> list[tuple[str, str]]:
+    """(모듈 점 이름, 함수 이름) 목록 — console_scripts·gui_scripts 만."""
+    specs: list[str] = []
+    if ctx.name == "pyproject.toml":
+        try:
+            data = tomllib.loads(ctx.text)
+        except (tomllib.TOMLDecodeError, ValueError):
+            return []
+        proj = data.get("project") or {}
+        tables = [proj.get("scripts"), proj.get("gui-scripts"),
+                  ((data.get("tool") or {}).get("poetry") or {}).get("scripts")]
+        specs = [f"x = {v}" for t in tables if isinstance(t, dict)
+                 for v in t.values() if isinstance(v, str)]
+    elif ctx.name in ("setup.cfg", "entry_points.txt"):
+        section = None
+        for line in ctx.text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("["):
+                section = stripped.strip("[]").strip()
+            elif section in ("console_scripts", "gui_scripts", "options.entry_points"):
+                if stripped.startswith(("console_scripts", "gui_scripts")):
+                    stripped = stripped.split("=", 1)[1]
+                specs.append(stripped)
+    elif ctx.name == "setup.py":
+        try:
+            tree = ast.parse(ctx.text)
+        except (SyntaxError, ValueError):
+            return []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "entry_points":
+                        specs += [n.value for n in ast.walk(kw.value)
+                                  if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    out = []
+    for spec in specs:
+        m = _SPEC.match(spec) or _SPEC.match(f"x = {spec.strip()}")
+        if m:
+            out.append((m.group(2), m.group(3)))
+    return out
+
+
+def entrypoint_exec(ctx: FileContext) -> Iterable[StaticFinding]:
+    if ctx.name not in _ENTRY_FILES or ctx.tree is None:
+        return
+    if ctx.name == "setup.py" and not _is_install_script(ctx):
+        return
+    specs = _entry_specs(ctx)
+    if not specs:
+        return
+    index = ModuleIndex.of(ctx.tree)
+    base = PurePosixPath(ctx.relpath).parent
+    if base.name.endswith((".egg-info", ".dist-info")):
+        base = base.parent
+    seen: set[tuple[str, int]] = set()
+    for modname, attr in specs:
+        rel = PurePosixPath(*modname.split("."))
+        mod = None
+        for root in (base, base / "src"):
+            for cand in (root / rel.with_suffix(".py"), root / rel / "__init__.py"):
+                mod = index.module(cand.as_posix())
+                if mod is not None:
+                    break
+            if mod is not None:
+                break
+        if mod is None:
+            continue
+        scope = Scope(index)
+        target = scope._lookup_in(mod, attr.split("."), 0)
+        if target is None or not isinstance(target[1], (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for r in scope.run(target[0], body_nodes(target[1])):
+            node = r.node
+            if not isinstance(node, ast.Call):
+                continue
+            token = _suspicious_spawn(node, r.module.aliases)
+            if token is None or (r.module.relpath, node.lineno) in seen:
+                continue
+            seen.add((r.module.relpath, node.lineno))
+            what = f"수상한 명령 실행 {_resolve(node.func, r.module.aliases)}() — '{token}'"
+            yield make_finding(
+                rule=RULE_ENTRYPOINT, cwe="CWE-506", severity=Severity.HIGH,
+                ctx=_ctx_for(r.module, ctx), line=node.lineno,
+                detail=f"콘솔 명령 {modname}:{attr} 실행 시 {what} {ORIGIN_MARK} {ctx.relpath}",
+            )
