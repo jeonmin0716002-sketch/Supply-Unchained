@@ -16,5 +16,5 @@ report = await run_cycle(..., ecosystems=[e.strip() for e in ecosystems.split(",
   통합 후 `req.ecosystem` 이 str 이든 Enum 이든 `run_scan` 이 받게 해야 한다.
 - `run_scan` 결과 dict 에 `ecosystem` 키가 있어야 큐가 올바른 생태계로 기록된다.
 
-## 미완 (이 세션이 한도로 중단)
-대시보드(index.html) 다중 생태계화, Part 2(tools/eval_new_uploads.py, docs/eval/watch-new-uploads.md)는 하지 못했다.
+## 미완 (한도로 중단)
+Part 2(tools/eval_new_uploads.py, docs/eval/watch-new-uploads.md)는 하지 못했다.
