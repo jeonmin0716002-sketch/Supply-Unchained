@@ -1,0 +1,88 @@
+# Supply-Unchained 공급망 게이트 — 다른 레포의 PR 에서 requirements 파일을 스캔해 block 이면 실패시킨다.
+#
+# 사용 예 (호출하는 레포의 워크플로):
+#   - uses: jeonmin0716002-sketch/Supply-Unchained@<커밋 SHA>   # 실제로는 SHA 로 고정
+#     with:
+#       path: requirements.txt
+#
+# 설계 원칙은 .github/workflows/supply-chain-scan.yml 과 같다:
+#   1) 미검증 패키지를 러너에서 pip install 하지 않는다 — 스캐너는 설치 없이 정적분석 결과만 본다.
+#   2) 종료 코드를 구분한다: 1 = 차단(정상 동작), 2 = 환경 오류. 둘 다 잡을 실패시키되
+#      메시지를 달리해서 "서버·네트워크 문제"를 "악성 패키지 발견"으로 오인하지 않게 한다.
+#
+# 액션 자체도 커밋 SHA 로 고정한다 (ci.yml 과 같은 이유). 옆의 주석이 사람이 읽는 버전 표시다.
+name: "Supply-Unchained gate"
+description: "requirements 파일의 패키지를 스캔해, block 판정이 있으면 워크플로를 실패시킨다."
+author: "Supply-Unchained"
+
+inputs:
+  path:
+    description: "검사할 requirements 파일 경로 (호출 레포 워크스페이스 기준)."
+    required: false
+    default: "requirements.txt"
+  fail-level:
+    description: >-
+      실패로 볼 최저 판정. 현재는 "block" 만 지원한다 (block 이 하나라도 있으면 실패).
+      "warn" 은 check-file 이 아직 warn 을 종료 코드로 내지 않아 지원하지 않으며, 다른 값이면 즉시 실패한다.
+    required: false
+    default: "block"
+  scanner-ref:
+    description: "스캐너 레포에서 체크아웃할 ref (브랜치·태그·커밋 SHA). 재현성을 위해 SHA 를 권장한다."
+    required: false
+    default: "main"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        FAIL_LEVEL: ${{ inputs.fail-level }}
+      run: |
+        # 지원하지 않는 값을 조용히 무시하면 게이트가 느슨해진 줄 모른다 — 그래서 실패시킨다.
+        if [ "$FAIL_LEVEL" != "block" ]; then
+          echo "::error::fail-level=$FAIL_LEVEL 은 지원하지 않습니다. 현재는 block 만 가능합니다."
+          exit 2
+        fi
+
+    - name: Install uv
+      # ci.yml 과 같은 SHA 고정. 갱신 방법도 ci.yml 주석과 같다.
+      uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+      with:
+        python-version: "3.12"
+
+    - name: Check out Supply-Unchained scanner
+      # 호출 레포 워크스페이스와 섞이지 않도록 runner.temp 아래에 받는다.
+      # 스캐너 코드가 호출 레포 파일을 덮어쓰는 일이 없게 하려는 것이다.
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      with:
+        repository: jeonmin0716002-sketch/Supply-Unchained
+        ref: ${{ inputs.scanner-ref }}
+        path: ${{ runner.temp }}/supply-unchained
+        persist-credentials: false
+
+    - name: Install scanner dependencies
+      shell: bash
+      working-directory: ${{ runner.temp }}/supply-unchained
+      # --no-dev: 테스트·린트 도구는 게이트에 필요 없다. --frozen: uv.lock 과 어긋나면 실패.
+      run: uv sync --frozen --no-dev
+
+    - name: Run gate on requirements file
+      shell: bash
+      working-directory: ${{ runner.temp }}/supply-unchained
+      env:
+        TARGET: ${{ github.workspace }}/${{ inputs.path }}
+      run: |
+        # check-file 은 파일 경로를 cwd 기준으로 읽으므로 호출 레포의 절대 경로를 넘긴다.
+        # 지금은 check-file 을 쓴다. 다생태계 project 모드가 들어오면 그 명령으로 바꾼다
+        # (docs/usage/ci-integration.md 참고).
+        set +e
+        uv run python -m cli.su_scan check-file "$TARGET"
+        code=$?
+        set -e
+        case "$code" in
+          0) echo "게이트 통과 (block 판정 없음)" ;;
+          1) echo "::error::차단 판정이 있어 게이트를 통과할 수 없습니다 ($TARGET)"; exit 1 ;;
+          2) echo "::error::스캔 환경 오류 (exit 2) — 파일 경로, 네트워크, 스캐너 설치를 확인하세요"; exit 2 ;;
+          *) echo "::error::예상하지 못한 종료 코드 $code"; exit "$code" ;;
+        esac
