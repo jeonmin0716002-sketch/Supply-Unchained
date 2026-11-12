@@ -1001,3 +1001,160 @@ def test_suspicious_spawn_stays_high_and_is_not_double_reported():
     files = {"p-1/setup.py": "import subprocess\nsubprocess.Popen('powershell -w hidden x')\n"}
     assert _spawn_findings(files) == []
     assert RULE_INSTALL_TIME in _high_rules(files)
+
+
+# ── 직전 릴리스 대비 새 행위 (engine/version_diff.py) ──────────────────────
+
+import asyncio  # noqa: E402
+import io  # noqa: E402
+import tarfile  # noqa: E402
+
+from api.schemas import StaticFinding  # noqa: E402
+from common.pypi import PackageContext, ProjectData  # noqa: E402
+from engine import version_diff as vd  # noqa: E402
+
+_LIGHTNING_INIT = (
+    "import os, subprocess, sys, threading\n"
+    "def _run():\n    s = os.path.join(os.path.dirname(__file__), '_runtime', 'start.py')\n"
+    "    subprocess.Popen([sys.executable, s])\n"
+    "threading.Thread(target=_run, daemon=True).start()\n"
+)
+
+
+def _findings(root: str, files: dict[str, str]) -> list[StaticFinding]:
+    files = {f"{root}/{k}": v for k, v in files.items()}
+    files[f"{root}/PKG-INFO"] = "Name: p"
+    return analyze_files(files)
+
+
+def test_new_spawn_is_escalated_to_high():
+    old = _findings("lightning-2.6.1", {"setup.py": "", "lightning/__init__.py": "import os\n"})
+    new = _findings("lightning-2.6.2", {"setup.py": "", "lightning/__init__.py": _LIGHTNING_INIT})
+    [extra] = vd.new_behaviors(new, old)
+    assert extra.rule == vd.RULE_NEW_BEHAVIOR and extra.severity is Severity.HIGH
+    assert extra.location == "lightning-2.6.2/lightning/__init__.py:4"
+    assert "명령 'python'" in extra.detail
+
+
+def test_existing_spawn_is_not_escalated_even_if_moved():
+    """줄번호·sdist 루트·파일 위치가 바뀌어도 같은 행위면 새 것이 아니다."""
+    old = _findings("p-1.0", {"setup.py": "", "p/__init__.py": _LIGHTNING_INIT})
+    new = _findings("p-1.1", {"setup.py": "", "p/__init__.py": "\n# moved\nfrom ._boot import x\n",
+                              "p/_boot.py": "x = 1\n" + _LIGHTNING_INIT})
+    assert any(f.rule == RULE_INSTALL_SPAWN for f in new)
+    assert vd.new_behaviors(new, old) == []
+
+
+def test_new_high_behavior_is_annotated_and_old_one_is_not():
+    net = "import requests\nrequests.get('http://x')\n"
+    old = _findings("p-1.0", {"setup.py": "", "p/__init__.py": net})
+    new = _findings("p-1.1", {"setup.py": "", "p/__init__.py": net,
+                              "p/x.pth": "import os; os.system('id')\n"})
+    extra = vd.new_behaviors(new, old)
+    assert [f.location for f in extra] == ["p-1.1/p/x.pth:1"]
+    assert "처음 나타남" in extra[0].detail
+
+
+def test_ordinary_medium_findings_are_not_candidates():
+    new = _findings("p-1.1", {"setup.py": "", "p/__init__.py": "def f(s):\n    return eval(s)\n"})
+    assert not vd.has_candidates(new)
+    assert vd.new_behaviors(new, []) == []
+
+
+def _project(releases: dict[str, tuple[str, bool]]) -> ProjectData:
+    return ProjectData(name="p", releases={
+        v: [{"filename": f"p-{v}.tar.gz", "packagetype": "sdist", "yanked": y,
+             "url": f"https://files/p-{v}.tar.gz", "upload_time_iso_8601": t}]
+        for v, (t, y) in releases.items()
+    })
+
+
+def test_previous_version_is_by_upload_time_and_skips_yanked():
+    proj = _project({
+        "1.0": ("2024-01-01T00:00:00Z", False),
+        "2.0": ("2024-03-01T00:00:00Z", False),
+        "1.1": ("2024-04-01T00:00:00Z", False),   # 백포트 — 번호는 작아도 2.0 보다 늦다
+        "2.1": ("2024-05-01T00:00:00Z", True),    # 철회된 악성 릴리스
+        "2.2": ("2024-05-02T00:00:00Z", False),
+    })
+    assert vd.previous_version(proj, "2.2") == "1.1"
+    assert vd.previous_version(proj, "1.0") is None  # 첫 릴리스
+    # 메타데이터에서 지워진 릴리스는 기준 시각(발견일)으로
+    from datetime import UTC, datetime
+    assert vd.previous_version(proj, "9.9", before=datetime(2024, 3, 15, tzinfo=UTC)) == "2.0"
+
+
+def _sdist(root: str, files: dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for rel, text in {"PKG-INFO": "Name: p", **files}.items():
+            data = text.encode()
+            info = tarfile.TarInfo(f"{root}/{rel}")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _ctx(handler) -> PackageContext:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return PackageContext("p", "2.0", client=client)
+
+
+def _project_json(versions: dict[str, str]) -> dict:
+    return {"info": {"name": "p"}, "releases": {
+        v: [{"filename": f"p-{v}.tar.gz", "packagetype": "sdist", "yanked": False,
+             "url": f"https://files.example/p-{v}.tar.gz", "upload_time_iso_8601": t}]
+        for v, t in versions.items()}}
+
+
+def test_escalate_downloads_previous_release_and_returns_only_additions():
+    new = _findings("p-2.0", {"setup.py": "", "p/__init__.py": _LIGHTNING_INIT})
+    calls: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(req.url.path)
+        if req.url.path == "/pypi/p/json":
+            return httpx.Response(200, json=_project_json(
+                {"1.0": "2024-01-01T00:00:00Z", "2.0": "2024-02-01T00:00:00Z"}))
+        assert req.url.path == "/p-1.0.tar.gz"
+        return httpx.Response(200, content=_sdist("p-1.0", {"setup.py": "",
+                                                            "p/__init__.py": "x = 1\n"}))
+
+    errors: list[str] = []
+    extra = asyncio.run(vd.escalate_new_behaviors(_ctx(handler), new, errors=errors))
+    assert errors == []
+    assert [f.rule for f in extra] == [vd.RULE_NEW_BEHAVIOR]
+    assert calls == ["/pypi/p/json", "/p-1.0.tar.gz"]
+
+
+def test_escalate_makes_no_request_without_candidates():
+    def handler(req: httpx.Request) -> httpx.Response:  # pragma: no cover - 불리면 실패
+        raise AssertionError(f"unexpected request {req.url}")
+
+    clean = _findings("p-2.0", {"setup.py": "", "p/__init__.py": "x = 1\n"})
+    assert asyncio.run(vd.escalate_new_behaviors(_ctx(handler), clean, errors=[])) == []
+
+
+def test_escalate_on_first_release_does_nothing():
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/pypi/p/json"
+        return httpx.Response(200, json=_project_json({"2.0": "2024-02-01T00:00:00Z"}))
+
+    new = _findings("p-2.0", {"setup.py": "", "p/__init__.py": _LIGHTNING_INIT})
+    errors: list[str] = []
+    assert asyncio.run(vd.escalate_new_behaviors(_ctx(handler), new, errors=errors)) == []
+    assert errors == []
+
+
+def test_escalate_reports_failure_to_fetch_previous_release():
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/pypi/p/json":
+            return httpx.Response(200, json=_project_json(
+                {"1.0": "2024-01-01T00:00:00Z", "2.0": "2024-02-01T00:00:00Z"}))
+        return httpx.Response(503)
+
+    new = _findings("p-2.0", {"setup.py": "", "p/__init__.py": _LIGHTNING_INIT})
+    errors: list[str] = []
+    assert asyncio.run(vd.escalate_new_behaviors(_ctx(handler), new, errors=errors)) == []
+    [msg] = errors
+    assert msg.startswith("static: ") and "1.0" in msg
