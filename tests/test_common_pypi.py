@@ -18,10 +18,12 @@ from common.pypi import (
     MAX_ARTIFACT_BYTES,
     ArchiveError,
     Artifact,
+    ExtractReport,
     PackageContext,
     PackageNotFound,
     PyPIError,
     download,
+    download_to_file,
     extract,
     fetch_project,
     is_safe_member_name,
@@ -101,33 +103,133 @@ def test_nothing_is_written_outside_dest(tmp_path):
 # ──────────────────────────────
 
 
-def test_tar_decompression_bomb_is_rejected(tmp_path, monkeypatch):
+def test_tar_decompression_bomb_is_capped(tmp_path, monkeypatch):
     """Highly compressible payloads must be capped by *uncompressed* size.
 
     The cap is patched down rather than allocating a real 200 MB bomb; the code
     path under test is identical, and the compressed size of this archive is a
     couple of hundred bytes -- which is exactly why a compressed-size check
     alone is not enough.
+
+    동작 변경(선택 추출): 예전엔 예외로 통째로 거부해 setup.py 하나도 못 봤다. 이제 상한을
+    넘는 파일은 풀지 않고 사유를 남긴다 — 상한 너머는 여전히 한 바이트도 쓰지 않는다.
     """
     monkeypatch.setattr("common.pypi.MAX_UNCOMPRESSED_BYTES", 1024)
-    data = make_tar({"bomb.bin": b"\0" * 65536})
+    data = make_tar({"bomb.py": b"\0" * 65536, "setup.py": b"import os\n"})
     assert len(data) < 1024  # tiny on the wire, 64 KB once unpacked
-    with pytest.raises(ArchiveError, match="decompression bomb"):
-        extract(data, "bomb-1.0.tar.gz", tmp_path)
+    report = ExtractReport()
+    root = extract(data, "bomb-1.0.tar.gz", tmp_path, report=report)
+    assert not (root / "bomb.py").exists()
+    assert (root / "setup.py").exists()
+    assert report.truncated and "decompression bomb" in report.truncated[0]
 
 
-def test_zip_decompression_bomb_is_rejected(tmp_path, monkeypatch):
+def test_zip_decompression_bomb_is_capped(tmp_path, monkeypatch):
     monkeypatch.setattr("common.pypi.MAX_UNCOMPRESSED_BYTES", 1024)
-    data = make_zip({"bomb.bin": b"\0" * 65536})
-    with pytest.raises(ArchiveError, match="decompression bomb"):
-        extract(data, "bomb-1.0.zip", tmp_path)
+    data = make_zip({"bomb.py": b"\0" * 65536})
+    report = ExtractReport()
+    root = extract(data, "bomb-1.0.zip", tmp_path, report=report)
+    assert not (root / "bomb.py").exists()
+    assert "decompression bomb" in report.truncated[0]
 
 
-def test_too_many_members_is_rejected(tmp_path, monkeypatch):
+def test_bomb_in_unanalysed_file_is_never_decompressed(tmp_path, monkeypatch):
+    """분석하지 않는 파일(.bin)은 풀지도 세지도 않는다 — 그래서 폭탄이 될 수 없다."""
+    monkeypatch.setattr("common.pypi.MAX_UNCOMPRESSED_BYTES", 1024)
+    data = make_tar({"blob.bin": b"\0" * 65536, "pkg/__init__.py": b"x = 1\n"})
+    report = ExtractReport()
+    root = extract(data, "b-1.0.tar.gz", tmp_path, report=report)
+    assert not (root / "blob.bin").exists()
+    assert report.truncated == []
+    assert "blob.bin" in report.names  # 목록에는 남는다
+
+
+def test_too_many_members_extracts_entry_points_first(tmp_path, monkeypatch):
+    """동작 변경: 예전엔 '멤버 N개 초과'로 거부해 아무것도 못 봤다(감시기 16k 중 61건).
+    이제 진입점·얕은 경로부터 상한만큼 풀고, 일부만 봤다는 사실을 보고한다."""
     monkeypatch.setattr("common.pypi.MAX_MEMBERS", 5)
-    data = make_tar({f"pkg/mod{i}.py": b"x = 1\n" for i in range(20)})
-    with pytest.raises(ArchiveError, match="more than 5 members"):
-        extract(data, "many-1.0.tar.gz", tmp_path)
+    entries = {f"pkg/deep/sub/mod{i}.py": b"x = 1\n" for i in range(20)}
+    entries["pkg/deep/sub/zz/evil.pth"] = b"import os\n"
+    entries["setup.py"] = b"import os\n"
+    report = ExtractReport()
+    root = extract(make_tar(entries), "many-1.0.tar.gz", tmp_path, report=report)
+    assert (root / "setup.py").exists()
+    assert (root / "pkg/deep/sub/zz/evil.pth").exists()
+    assert report.extracted == 5
+    assert report.truncated and "5개" in report.truncated[0]
+    assert len(report.names) == 22
+
+
+def test_data_heavy_archive_is_fully_inspected(tmp_path, monkeypatch):
+    """데이터 파일이 상한보다 많아도 코드 파일이 상한 안이면 '전부 봤다'."""
+    monkeypatch.setattr("common.pypi.MAX_MEMBERS", 5)
+    entries = {f"pkg/data/img{i}.png": b"PNG" for i in range(50)}
+    entries["pkg/__init__.py"] = b"x = 1\n"
+    report = ExtractReport()
+    extract(make_zip(entries), "d-1.0-py3-none-any.whl", tmp_path, report=report)
+    assert report.truncated == []
+    assert report.extracted == 1
+    assert len(report.names) == 51
+
+
+def test_unsafe_path_in_unextracted_member_still_rejected(tmp_path):
+    with pytest.raises(ArchiveError, match="unsafe archive path"):
+        extract(make_tar({"../escape.png": b"x", "ok.py": b"x"}), "e-1.0.tar.gz", tmp_path)
+
+
+def test_links_are_skipped(tmp_path):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        link = tarfile.TarInfo("evil.py")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/etc/passwd"
+        tar.addfile(link)
+    root = extract(buf.getvalue(), "l-1.0.tar.gz", tmp_path)
+    assert not (root / "evil.py").exists()
+
+
+async def test_download_streams_to_disk_with_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr("common.pypi.MAX_ARTIFACT_BYTES", 10)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 50)  # Content-Length 50 > 10
+
+    art = Artifact(filename="a.tar.gz", packagetype="sdist", url="https://x/a.tar.gz")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ArchiveError, match="SU_MAX_ARTIFACT_MB"):
+            await download_to_file(art, tmp_path / "a", client=client)
+    monkeypatch.setattr("common.pypi.MAX_ARTIFACT_BYTES", 100)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        out = await download_to_file(art, tmp_path / "b", client=client)
+    assert out.read_bytes() == b"x" * 50
+
+
+def test_artifact_cap_env(monkeypatch):
+    from common.pypi import _artifact_cap_bytes
+
+    monkeypatch.setenv("SU_MAX_ARTIFACT_MB", "7")
+    assert _artifact_cap_bytes() == 7 * 1024 * 1024
+    monkeypatch.setenv("SU_MAX_ARTIFACT_MB", "junk")
+    assert _artifact_cap_bytes() == 100 * 1024 * 1024
+
+
+async def test_context_archive_names_lists_unextracted_members():
+    sdist = make_tar({"pkg-1.0/setup.py": b"x=1\n", "pkg-1.0/logo.png": b"PNG"})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/json"):
+            return httpx.Response(200, json={"info": {}, "releases": {"1.0": [
+                {"filename": "pkg-1.0.tar.gz", "packagetype": "sdist",
+                 "url": "https://files.example/pkg-1.0.tar.gz", "size": len(sdist)}]}})
+        return httpx.Response(200, content=sdist)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with PackageContext("pkg", "1.0", client=client) as ctx:
+        names = await ctx.archive_names()
+        root = await ctx.extracted_path()
+        assert sorted(names) == ["pkg-1.0/logo.png", "pkg-1.0/setup.py"]
+        assert not (root / "pkg-1.0/logo.png").exists()
+    await client.aclose()
 
 
 def test_unsupported_format_is_rejected(tmp_path):

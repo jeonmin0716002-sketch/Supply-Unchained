@@ -195,7 +195,10 @@ def test_static_layer_converts_fetch_error(client, monkeypatch):
 
     body = client.post("/api/v1/scan", json={"name": "ghost-pkg", "version": "0.0.1"}).json()
     assert any(e.startswith("static:") for e in body["layer_errors"])
-    assert body["verdict"] == "safe"  # 남은 레이어로 판정은 계속된다
+    # 남은 레이어로 판정은 계속되지만, 의도적 동작 변경으로 safe 가 아니라 warn 이다 —
+    # 정적분석을 못 했으면 "깨끗하다"고 말하지 않는다 (설계 문서 §2.3, scan._decide).
+    assert body["verdict"] == "warn"
+    assert any(r.startswith(scan.UNSCANNED_REASON) for r in body["verdict_reasons"])
 
 
 def test_layers_share_one_package_context(client, monkeypatch):

@@ -116,6 +116,7 @@ class _TrackedTree:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._inner = DiskTree(root)
+        self._files: frozenset[str] | None = None
         self.unreadable: list[str] = []
 
     def files(self) -> list[str]:
@@ -126,9 +127,16 @@ class _TrackedTree:
 
     def read(self, relpath: str) -> str | None:
         text = self._inner.read(relpath)
-        if text is None and relpath not in self.unreadable:
+        # 규칙은 옆 파일(PKG-INFO·setup.cfg 등)을 "있으면" 읽어본다 — 없는 파일의 None 은
+        # 읽기 실패가 아니다. 트리에 실제로 있는 파일만 센다.
+        if text is None and relpath not in self.unreadable and relpath in self._present():
             self.unreadable.append(relpath)
         return text
+
+    def _present(self) -> frozenset[str]:
+        if self._files is None:
+            self._files = frozenset(self._inner.files())
+        return self._files
 
 
 def _finding_key(f: StaticFinding) -> tuple:
@@ -529,16 +537,38 @@ def _demo_layers(
 # 종합 판정 (week0 회의 기준 규칙 초안 유지)
 # ──────────────────────────────
 
+#: 정적분석이 패키지를 다 보지 못했을 때 판정 사유의 머리말. 프록시가 이 사유로 차단 여부를
+#: 고르고(``static_incomplete``), 저장된 이력에도 남아 대시보드가 같은 기준으로 표시한다.
+UNSCANNED_REASON = "정적분석 미완료"
+
+
+def static_gaps(layer_errors: list[str]) -> list[str]:
+    """정적 레이어가 "다 보지 못했다"고 남긴 사유 (``static:`` 접두사)."""
+    return [e for e in layer_errors if e.startswith("static:")]
+
+
+def static_incomplete(result: ScanResponse) -> bool:
+    """이 판정이 패키지 내용을 다 보지 못한 상태에서 나왔는가."""
+    return any(r.startswith(UNSCANNED_REASON) for r in result.verdict_reasons)
+
+
 def _decide(
     vulns: list[Vulnerability],
     findings: list[StaticFinding],
     risk_score: int,
+    *,
+    unscanned: list[str] | tuple[str, ...] = (),
 ) -> tuple[Verdict, list[str]]:
     """종합 판정 로직 (초안 규칙 — 팀 합의 대상)
 
-    - 정적분석 HIGH 이상 or risk_score >= 70  → block
-    - CVE 존재 or risk_score >= 40            → warn
-    - 그 외                                    → safe
+    - 정적분석 HIGH 이상 or risk_score >= 70        → block
+    - CVE 존재 or risk_score >= 40 or 정적분석 미완료 → warn
+    - 그 외                                          → safe
+
+    미완료가 최소 warn 인 이유("못 봤다"는 "깨끗하다"가 아니다 — 설계 문서 §2.3): 예전엔
+    아카이브 멤버 5000개·30 MB 를 넘으면 정적 레이어가 layer_errors 로만 빠지고 판정은
+    safe 가 될 수 있었다. 감시기 실측 16k 스캔 중 61건이 그 경로였고, 프록시는 block 만
+    막으므로 "크게 만들기만 하면 통과"하는 우회로였다.
     """
     reasons: list[str] = []
 
@@ -549,7 +579,16 @@ def _decide(
         reasons.append("정적분석에서 고위험 악성 패턴 탐지")
     if risk_score >= 70:
         reasons.append(f"메타데이터 위험도 스코어 {risk_score}점 (임계 70 이상)")
+    # block 이어도 남긴다 — "본 부분에서만 이만큼 나왔다"는 사실도 판정 근거다.
+    if unscanned:
+        more = f" 외 {len(unscanned) - 1}건" if len(unscanned) > 1 else ""
+        unscanned_reason = (
+            f"{UNSCANNED_REASON} — 패키지 내용을 다 보지 못해 safe 로 판정하지 않음 "
+            f"({unscanned[0].removeprefix('static:').strip()}{more})"
+        )
     if has_high_finding or risk_score >= 70:
+        if unscanned:
+            reasons.append(unscanned_reason)
         return Verdict.BLOCK, reasons
 
     if vulns:
@@ -557,7 +596,9 @@ def _decide(
         reasons.append(f"알려진 취약점 {len(vulns)}건 (최고 심각도: {worst})")
     if risk_score >= 40:
         reasons.append(f"메타데이터 위험도 스코어 {risk_score}점 (주의 40 이상)")
-    if vulns or risk_score >= 40:
+    if unscanned:
+        reasons.append(unscanned_reason)
+    if vulns or risk_score >= 40 or unscanned:
         return Verdict.WARN, reasons
 
     reasons.append("탐지된 위협 없음")
@@ -637,7 +678,10 @@ async def run_scan(
         # 부가 정보라 실패는 조용히 빈 리스트로 남고 판정에는 영향 없음.
         await tag_vulnerabilities(vulns, http)
 
-    verdict, reasons = _decide(vulns, findings, risk_score)
+    # 버전 비교 오류(diff_errors)는 아직 섞지 않은 상태에서 미검사 여부를 정한다.
+    verdict, reasons = _decide(
+        vulns, findings, risk_score, unscanned=static_gaps(layer_errors)
+    )
     reasons.extend(notes)
     layer_errors.extend(diff_errors)
 

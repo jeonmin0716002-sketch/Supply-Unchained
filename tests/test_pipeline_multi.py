@@ -512,3 +512,99 @@ def test_proxy_passes_clean_requested_file(online, tmp_path, monkeypatch):
                   params={"u": "https://files.pythonhosted.org/x/p-1.0.tar.gz"})
     assert r.status_code == 200
     assert r.content == CLEAN_SDIST
+
+
+# ──────────────────────────────
+# C. 우회 2 — "검사하지 못함"은 통과가 아니다
+# ──────────────────────────────
+
+
+def test_decide_unscanned_is_at_least_warn():
+    v, reasons = scan._decide([], [], 0, unscanned=["static: too big"])
+    assert v.value == "warn"
+    assert reasons[0].startswith(scan.UNSCANNED_REASON) and "too big" in reasons[0]
+    high = StaticFinding(rule="custom-pth", cwe="CWE-94", severity=Severity.HIGH,
+                         location="x.pth:1")
+    assert scan._decide([], [high], 0, unscanned=["static: x"])[0].value == "block"
+    assert scan._decide([], [], 0)[0].value == "safe"
+
+
+async def test_regression_oversized_artifact_is_not_safe(online, tmp_path, monkeypatch):
+    """우회 재현: 예전엔 30 MB 초과 → static 레이어만 빠지고 판정 safe 였다."""
+    monkeypatch.setattr("common.pypi.MAX_ARTIFACT_BYTES", 100)
+    big = make_tar({"p-1.0/setup.py": b"x = 1\n", "p-1.0/pad.py": b"# " + b"a" * 5000})
+    res = await _run_pip({"p-1.0.tar.gz": big}, tmp_path, {})
+    assert res.verdict.value == "warn"
+    assert any("SU_MAX_ARTIFACT_MB" in e for e in res.layer_errors if e.startswith("static:"))
+    assert scan.static_incomplete(res)
+
+
+async def test_regression_many_members_still_inspects_entry_points(online, tmp_path, monkeypatch):
+    """우회 재현: 예전엔 멤버 5000개 초과 → 아무것도 안 보고 safe 가능. 이제 진입점부터 보고
+    (여기서는 악성 .pth 를 잡아 block), 일부만 봤다는 사실을 layer_errors 에 남긴다."""
+    monkeypatch.setattr("common.pypi.MAX_MEMBERS", 3)
+    files = {f"p/deep/m{i}.py": b"x = 1\n" for i in range(10)}
+    files["evil.pth"] = EVIL_PTH
+    res = await _run_pip({"p-1.0-py3-none-any.whl": make_zip(files)}, tmp_path, {})
+    assert [f.rule for f in res.static_findings if f.rule == "custom-pth"] == ["custom-pth"]
+    assert res.verdict.value == "block"
+    assert any("검사하지 못함" in e for e in res.layer_errors if e.startswith("static:"))
+
+
+async def test_truncated_clean_package_is_warn(online, tmp_path, monkeypatch):
+    monkeypatch.setattr("common.pypi.MAX_MEMBERS", 3)
+    files = {f"p/deep/m{i}.py": b"x = 1\n" for i in range(10)}
+    res = await _run_pip({"p-1.0-py3-none-any.whl": make_zip(files)}, tmp_path, {})
+    assert res.verdict.value == "warn"
+    assert scan.static_incomplete(res)
+
+
+def _proxy_get(tmp_path, monkeypatch, files, fn):
+    from api.main import app
+
+    monkeypatch.setenv("SU_DB_PATH", str(tmp_path / "px.db"))
+    with TestClient(app) as c:
+        app.state.http = httpx.AsyncClient(transport=_pypi_transport(files, {}))
+        return c.get(f"/files/{fn}", params={"u": f"https://files.pythonhosted.org/x/{fn}"})
+
+
+def test_regression_proxy_refuses_unscanned_file(online, tmp_path, monkeypatch):
+    monkeypatch.setattr("common.pypi.MAX_ARTIFACT_BYTES", 100)
+    monkeypatch.delenv("SU_UNSCANNED_POLICY", raising=False)
+    big = make_tar({"p-1.0/pad.py": b"# " + b"a" * 5000})
+    r = _proxy_get(tmp_path, monkeypatch, {"p-1.0.tar.gz": big}, "p-1.0.tar.gz")
+    assert r.status_code == 403
+    assert r.json()["error"] == "unscanned_by_supply_unchained"
+    assert any(e.startswith("static:") for e in r.json()["layer_errors"])
+
+
+def test_proxy_unscanned_policy_allow(online, tmp_path, monkeypatch):
+    monkeypatch.setattr("common.pypi.MAX_ARTIFACT_BYTES", 100)
+    monkeypatch.setenv("SU_UNSCANNED_POLICY", "allow")
+    big = make_tar({"p-1.0/pad.py": b"# " + b"a" * 5000})
+    # 스캔은 메타데이터 크기로 거절되지만 통과 스트리밍은 업스트림 그대로 (상한 무관)
+    r = _proxy_get(tmp_path, monkeypatch, {"p-1.0.tar.gz": big}, "p-1.0.tar.gz")
+    assert r.status_code == 200
+
+
+async def test_overridden_extract_still_reports_via_context(fake_npm, tmp_path, monkeypatch):
+    """어댑터가 extract 를 덮어써도(.gem 중첩 등) common.archive 를 거치면 선택 추출 기록이
+    남아 미완료가 판정에 반영된다. scan_suffixes 로 더 풀 접미사도 받는다."""
+    from common.archive import extract_archive
+
+    monkeypatch.setattr("common.pypi.MAX_MEMBERS", 2)
+
+    class Nested(FakeEco):
+        scan_suffixes = (".erb",)
+
+        def extract(self, data, artifact, dest):
+            assert isinstance(data, bytes)  # 계약상 bytes
+            return extract_archive(data, "inner.tgz", dest)
+
+    eco = Nested(_project({}))
+    fake_npm["eco"] = eco
+    archive = make_tar({"package/a.erb": b"EVIL", "package/b.js": b"1", "package/c.js": b"2"})
+    res = await _run(ScanRequest(ecosystem="npm", name="left-pad", version="1.0.0"),
+                     archive, tmp_path, {})
+    assert scan.static_incomplete(res)
+    assert res.verdict.value == "block"  # 얕은 경로 우선이라 .erb 도 풀렸다
