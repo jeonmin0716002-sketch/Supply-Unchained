@@ -135,4 +135,14 @@ async def fetch_project(name: str, *, client: httpx.AsyncClient) -> Project:
         )
     if latest is None and versions:
         latest = versions[-1]
+    # 검색 색인이 못 따라온 최신 버전은 jar 가 있는지 HEAD 로 확인한다 (부모 POM·BOM 은 jar 가 없어
+    # 그대로 두면 "다운로드 실패"가 된다). 비용 때문에 최신 버전 하나만.
+    if latest and latest not in docs:
+        art = _artifact(name, latest, ".jar", "jar")
+        try:
+            head = await client.head(art.url)
+            if head.status_code == 404:
+                releases[latest].artifacts = [_artifact(name, latest, ".pom", "pom")]
+        except httpx.HTTPError:
+            pass
     return Project(ecosystem="maven", name=name, latest=latest, releases=releases, extra=extra)
