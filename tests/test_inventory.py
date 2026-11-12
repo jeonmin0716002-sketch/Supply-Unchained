@@ -260,3 +260,50 @@ async def test_osv_detail_failure_marks_error():
     async with _osv_client(handler) as c:
         out = await query_batch([OsvQuery("PyPI", "a", "1")], client=c, sleep=_nosleep)
     assert out[0].error and out[0].vulns[0].id == "V9"
+
+
+# ── scan ──────────────────────────────────────────────────────────────
+
+from inventory.scan import scan_dependencies  # noqa: E402
+
+
+def _osv_ok(req: httpx.Request):
+    if req.method == "POST":
+        qs = json.loads(req.content)["queries"]
+        return httpx.Response(200, json={"results": [
+            {"vulns": [{"id": "V1"}]} if q["package"]["name"] == "vuln" else {} for q in qs]})
+    return httpx.Response(200, json={"id": "V1", "database_specific": {"severity": "CRITICAL"}})
+
+
+DEPS = [Dependency("fake", "vuln", "1.0"), Dependency("fake", "ok", "2.0"),
+        Dependency("fake", "loose", None), Dependency("ghost", "x", "1")]
+
+
+async def test_fast_mode_reports_unchecked_and_severity(fake_eco):
+    async with _osv_client(_osv_ok) as c:
+        rep = await scan_dependencies(DEPS, mode="fast", client=c)
+    assert [r.dep.name for r in rep.rows] == ["vuln", "ok"]
+    assert rep.counts()["severity"] == {"critical": 1}
+    reasons = {d.name: why for d, why in rep.unchecked}
+    assert "unpinned" in reasons["loose"] and "어댑터 없음" in reasons["x"]
+    assert rep.fails("vuln-critical") and rep.fails("warn") and not rep.fails("block")
+
+
+async def test_full_mode_uses_stubbed_scan(fake_eco):
+    async def stub(dep):
+        if dep.name == "ok":
+            raise RuntimeError("boom")
+        return {"verdict": "block", "risk_score": 90, "verdict_reasons": ["bad"],
+                "static_findings": [{"rule": "r", "severity": "high", "location": "a:1"}]}
+
+    async with _osv_client(_osv_ok) as c:
+        rep = await scan_dependencies(DEPS[:2], mode="full", client=c, scan_fn=stub)
+    by = {r.dep.name: r for r in rep.rows}
+    assert by["vuln"].verdict == "block" and by["vuln"].findings == ["r high a:1"]
+    assert by["ok"].error and rep.fails("block")  # 스캔 실패는 통과가 아니다
+
+
+async def test_osv_error_fails_gate(fake_eco):
+    async with _osv_client(lambda r: httpx.Response(500)) as c:
+        rep = await scan_dependencies(DEPS[:2], mode="fast", client=c)
+    assert all(r.error for r in rep.rows) and rep.fails("block")
