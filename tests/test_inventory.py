@@ -307,3 +307,54 @@ async def test_osv_error_fails_gate(fake_eco):
     async with _osv_client(lambda r: httpx.Response(500)) as c:
         rep = await scan_dependencies(DEPS[:2], mode="fast", client=c)
     assert all(r.error for r in rep.rows) and rep.fails("block")
+
+
+# ── CLI ───────────────────────────────────────────────────────────────
+
+from typer.testing import CliRunner  # noqa: E402
+
+import cli.project_cmd as project_cmd  # noqa: E402
+
+
+@pytest.fixture
+def cli_app(fake_eco, monkeypatch):
+    import inventory.scan as scan_mod
+
+    real = scan_mod.scan_dependencies
+
+    async def patched(deps, **kw):
+        async with _osv_client(_osv_ok) as c:
+            kw["client"] = c
+            return await real(deps, **kw)
+
+    monkeypatch.setattr(scan_mod, "scan_dependencies", patched)
+    app = project_cmd.typer.Typer()
+    project_cmd.register(app)
+    return app
+
+
+def test_cli_exit_codes(cli_app, tmp_path):
+    (tmp_path / "fake.lock").write_text("vuln,ok")
+    r = CliRunner()
+    assert r.invoke(cli_app, ["project", str(tmp_path)]).exit_code == 0  # block 기준: 통과
+    assert r.invoke(cli_app, ["project", str(tmp_path), "--fail-on", "vuln-critical"]
+                    ).exit_code == 1
+    assert r.invoke(cli_app, ["project", str(tmp_path / "nope")]).exit_code == 2
+    assert r.invoke(cli_app, ["project", str(tmp_path), "--mode", "x"]).exit_code == 2
+
+
+def test_cli_json_and_cyclonedx_output(cli_app, tmp_path):
+    (tmp_path / "fake.lock").write_text("vuln")
+    out = tmp_path / "o.json"
+    r = CliRunner()
+    res = r.invoke(cli_app, ["project", str(tmp_path), "--format", "cyclonedx",
+                             "--output", str(out), "--fail-on", "block"])
+    assert res.exit_code == 0
+    bom = json.loads(out.read_text(encoding="utf-8"))
+    assert bom["vulnerabilities"][0]["id"] == "V1"
+
+
+def test_cli_sbom_bad_file(cli_app, tmp_path):
+    f = tmp_path / "x.json"
+    f.write_text("{}")
+    assert CliRunner().invoke(cli_app, ["sbom", str(f)]).exit_code == 2
