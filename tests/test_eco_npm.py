@@ -583,3 +583,110 @@ def test_live_feed():
 
     items, errors = asyncio.run(go())
     assert not errors and len(items) > 10
+
+
+# ── 레지스트리 프록시 ─────────────────────────────────────────────
+
+from types import SimpleNamespace  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from api.routers import npm_proxy  # noqa: E402
+from api.schemas import Verdict  # noqa: E402
+
+TARBALL = b"\x1f\x8b fake tgz bytes"
+
+
+def _proxy_app(monkeypatch, verdict: Verdict, *, packument=None, scans=None):
+    doc = packument or PACKUMENT
+
+    def upstream(req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith(".tgz"):
+            async def body():  # 실제 전송처럼 스트림으로 (aiter_raw 가 읽는다)
+                yield TARBALL[:5]
+                yield TARBALL[5:]
+
+            return httpx.Response(200, content=body(),
+                                  headers={"content-type": "application/octet-stream"})
+        return httpx.Response(200, json=doc)
+
+    async def fake_run_scan(req, *, http, store):
+        (scans if scans is not None else []).append((req.name, req.version))
+        return SimpleNamespace(verdict=verdict, risk_score=90, verdict_reasons=["test"],
+                               layer_errors=[], scan_id=7)
+
+    monkeypatch.setattr(npm_proxy.scan_layer, "run_scan", fake_run_scan)
+    monkeypatch.setattr(npm_proxy, "build_scan_request",
+                        lambda n, v: SimpleNamespace(name=n, version=v))
+    app = FastAPI()
+    app.include_router(npm_proxy.router)
+    app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app.state.store = None
+    return TestClient(app)
+
+
+def test_proxy_rewrites_tarball_keeps_integrity(monkeypatch):
+    client = _proxy_app(monkeypatch, Verdict.SAFE)
+    r = client.get("/npm/@acme%2fwidget")
+    assert r.status_code == 200
+    dist = r.json()["versions"]["1.1.0"]["dist"]
+    assert dist["tarball"] == "http://testserver/npm/@acme/widget/-/widget-1.1.0.tgz"
+    assert dist["integrity"] == "sha512-y" and dist["shasum"] == "bb"
+
+
+def test_proxy_scans_exact_tarball_and_streams(monkeypatch):
+    scans: list = []
+    client = _proxy_app(monkeypatch, Verdict.WARN, scans=scans)
+    r = client.get("/npm/@acme/widget/-/widget-1.1.0.tgz")
+    assert r.status_code == 200 and r.content == TARBALL
+    assert scans == [("@acme/widget", "1.1.0")]
+
+
+def test_proxy_blocks(monkeypatch):
+    client = _proxy_app(monkeypatch, Verdict.BLOCK)
+    r = client.get("/npm/@acme/widget/-/widget-1.0.0.tgz")
+    assert r.status_code == 403
+    body = r.json()
+    assert body["error"] == "blocked_by_supply_unchained"
+    assert body["package"] == "@acme/widget@1.0.0"
+
+
+@pytest.mark.parametrize("path", [
+    "/npm/@acme/widget/-/other-1.0.0.tgz",      # 파일명과 이름 불일치
+    "/npm/@acme/widget/-/widget-latest.tgz",    # 버전 형식 아님
+    "/npm/@acme/widget/-/widget-1.0.0.zip",
+])
+def test_proxy_fail_closed(monkeypatch, path):
+    scans: list = []
+    client = _proxy_app(monkeypatch, Verdict.SAFE, scans=scans)
+    assert client.get(path).status_code == 403 and scans == []
+
+
+def test_proxy_rejects_foreign_tarball_host(monkeypatch):
+    evil = json.loads(json.dumps(PACKUMENT))
+    evil["versions"]["1.1.0"]["dist"]["tarball"] = "https://evil.example/widget-1.1.0.tgz"
+    scans: list = []
+    client = _proxy_app(monkeypatch, Verdict.SAFE, packument=evil, scans=scans)
+    assert client.get("/npm/@acme/widget/-/widget-1.1.0.tgz").status_code == 403 and scans == []
+
+
+def test_proxy_unknown_version_404(monkeypatch):
+    client = _proxy_app(monkeypatch, Verdict.SAFE)
+    assert client.get("/npm/@acme/widget/-/widget-9.9.9.tgz").status_code == 404
+
+
+def test_proxy_pipeline_without_npm_is_503(monkeypatch):
+    client = _proxy_app(monkeypatch, Verdict.SAFE)
+
+    def no_npm(n, v):
+        raise ValueError("ecosystem npm not accepted")
+
+    monkeypatch.setattr(npm_proxy, "build_scan_request", no_npm)
+    assert client.get("/npm/@acme/widget/-/widget-1.1.0.tgz").status_code == 503
+
+
+def test_proxy_invalid_name_and_audit(monkeypatch):
+    client = _proxy_app(monkeypatch, Verdict.SAFE)
+    assert client.get("/npm/-/npm/v1/security/advisories/bulk").status_code == 404
+    assert client.get("/npm/..%2Fetc").status_code in (400, 404)
