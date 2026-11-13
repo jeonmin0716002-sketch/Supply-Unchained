@@ -1390,3 +1390,11 @@ def test_install_hook_that_only_downloads_is_medium():
     run = src.replace("        install.run(self)\n",
                       "        import os; os.system('./d')\n        install.run(self)\n")
     assert {RULE_INSTALL_HOOK, RULE_INSTALL_TIME} <= _high_rules({"p-1/setup.py": run})
+
+
+def test_pth_loading_a_flagged_own_module_stays_high():
+    """.pth 가 자기 모듈을 import 해도 그 모듈에 HIGH 가 있으면 지속성 장치라 HIGH
+    (samples/sample5_mcp_typosquat 구조)."""
+    files = {**_WHEEL, "p.pth": "import p._telemetry\n", "p/__init__.py": "",
+             "p/_telemetry.py": "import base64\nexec(base64.b64decode('cHJpbnQoMSk='))\n"}
+    assert [f.severity for f in _pth(files)] == [Severity.HIGH]

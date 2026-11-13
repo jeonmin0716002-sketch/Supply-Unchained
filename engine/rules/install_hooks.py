@@ -19,7 +19,7 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Iterable
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from api.schemas import Severity, StaticFinding
 from engine.rules.base import FileContext, make_finding
@@ -171,6 +171,44 @@ def own_module_files(ctx: FileContext, top: str) -> list[str]:
             or (PurePosixPath(f).name == "__init__.py" and PurePosixPath(f).parent.name == top)]
 
 
+def _pth_targets_flagged(ctx: FileContext, line: str) -> bool:
+    """.pth 가 import 하는 자기 모듈(점 경로의 각 단계)에 HIGH finding 이 있는가.
+
+    있으면 .pth 는 "문제 있는 코드를 모든 파이썬 프로세스에서 띄우는 지속성 장치"라 HIGH 로
+    남긴다 (samples/sample5_mcp_typosquat: .pth → 자기 모듈 _telemetry 의 디코딩→exec).
+    """
+    from engine.rules import AST_RULES  # 순환 import 방지
+
+    try:
+        names = [a.name for a in ast.parse(line).body[0].names]  # type: ignore[attr-defined]
+    except (SyntaxError, ValueError, AttributeError, IndexError):
+        return True
+    assert ctx.tree is not None
+    files = set()
+    for dotted in names:
+        parts = tuple(dotted.split("."))
+        for i in range(1, len(parts) + 1):
+            want = parts[:i]
+            for f in ctx.tree.files():
+                fp = PurePosixPath(f)
+                mod = fp.parent.parts if fp.name == "__init__.py" else fp.with_suffix("").parts
+                if fp.suffix == ".py" and mod[-len(want):] == want:
+                    files.add(f)
+    for f in sorted(files):
+        text = ctx.tree.read(f)
+        if text is None:
+            return True  # 못 읽었다 = 못 봤다
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            continue
+        sub = FileContext(path=Path(f), relpath=f, text=text, tree=ctx.tree)
+        for rule in AST_RULES:
+            if any(x.severity in (Severity.HIGH, Severity.CRITICAL) for x in rule(sub, tree)):
+                return True
+    return False
+
+
 def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
     """Flag ``.pth`` lines that ``site.py`` will execute at every startup.
 
@@ -196,12 +234,14 @@ def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
             continue
 
         own = pth_own_imports(line)
-        if reachable and own and all(own_module_files(ctx, m) for m in own):
+        if (reachable and own and all(own_module_files(ctx, m) for m in own)
+                and not _pth_targets_flagged(ctx, line)):
             # 신규 업로드 실측 오탐(docs/eval/watch-new-uploads.md §P2): dagz·doeff-hy·
             # quantark·nvidia-cutlass-dsl·triton-utlx-rocm 의 .pth 가 모두 같은 배포물의 자기
             # 모듈을 import 하는 한 줄이었다 — 의도된 시작 훅이다. 그 모듈의 import 시점 코드는
             # custom-install-time-exec 가 본다(.pth 가 import 하는 모듈은 위치와 무관하게
-            # 패키지 모듈로 취급 — install_time._is_package_module).
+            # 패키지 모듈로 취급 — install_time._is_package_module). 그 모듈에 HIGH 가 있으면
+            # .pth 도 HIGH 다 (_pth_targets_flagged).
             severity = Severity.MEDIUM
             detail = (
                 "'.pth' runs at every interpreter startup but only imports this "
