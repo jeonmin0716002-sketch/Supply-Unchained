@@ -38,23 +38,31 @@ def normalize_name(name: str) -> str:
 _POPULAR_NORMALIZED: frozenset[str] = frozenset(normalize_name(p) for p in POPULAR_PACKAGES)
 
 
-def typosquat_score(name: str) -> float:
+def typosquat_score(name: str, popular: frozenset[str] | None = None) -> float:
     """How closely ``name`` resembles a *different* popular package (0.0-1.0).
+
+    ``popular`` is the comparison set for another ecosystem (already normalized
+    names, see ``ecosystems.base.Ecosystem.popular_names``); the default is the
+    PyPI list.
 
     Returns 0.0 when the name is itself a known popular package (it is the real
     thing, not an impersonation) or when it looks nothing like any of them.
     A high score means the name is suspiciously close to a popular package --
     the classic typosquatting setup (e.g. ``reqeusts`` vs ``requests``).
     """
+    known = (
+        _POPULAR_NORMALIZED if popular is None
+        else frozenset(normalize_name(p) for p in popular)
+    )
     target = normalize_name(name)
-    if not target or target in _POPULAR_NORMALIZED:
+    if not target or target in known:
         return 0.0
 
     best = 0.0
-    for popular in _POPULAR_NORMALIZED:
-        if abs(len(popular) - len(target)) > _MAX_LEN_DELTA:
+    for candidate in known:
+        if abs(len(candidate) - len(target)) > _MAX_LEN_DELTA:
             continue
-        ratio = _namespaced_ratio(target, popular)
+        ratio = _namespaced_ratio(target, candidate)
         if ratio > best:
             best = ratio
             if best == 1.0:  # can't do better (shouldn't happen after the guard)

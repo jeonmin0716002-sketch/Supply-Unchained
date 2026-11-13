@@ -21,7 +21,27 @@ OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 DEFAULT_TIMEOUT = 10.0
 
 # Our Ecosystem enum uses installer-facing names ("pip"); OSV uses index names.
-_OSV_ECOSYSTEM = {Ecosystem.PIP: "PyPI"}
+# 이름 대응의 원본은 각 어댑터의 ``osv_ecosystem`` 이다. 여기 표는 어댑터가 아직 병합되지
+# 않은 생태계에서도 OSV 조회만큼은 되게 하려는 대체값 — 어댑터와 다르면 어댑터가 이긴다.
+_OSV_ECOSYSTEM = {
+    "pip": "PyPI", "npm": "npm", "cargo": "crates.io", "go": "Go", "maven": "Maven",
+    "rubygems": "RubyGems", "nuget": "NuGet", "composer": "Packagist",
+}
+
+
+def osv_ecosystem(ecosystem: Ecosystem | str) -> str:
+    """API 식별자 → OSV ecosystem 이름. 어댑터의 값을 우선한다."""
+    eco_id = ecosystem.value if isinstance(ecosystem, Ecosystem) else str(ecosystem)
+    try:
+        import ecosystems
+
+        return ecosystems.get(eco_id).osv_ecosystem
+    except LookupError:
+        pass
+    if eco_id not in _OSV_ECOSYSTEM:
+        # 모르는 생태계를 PyPI 로 조회하면 "취약점 없음"으로 보인다 — 조회 실패로 올린다.
+        raise CveLookupError(f"OSV ecosystem unknown for {eco_id!r}")
+    return _OSV_ECOSYSTEM[eco_id]
 
 # GHSA/OSV publish a coarse label in database_specific. "MODERATE" is GitHub's
 # spelling of what our schema calls "medium".
@@ -144,7 +164,7 @@ async def query_osv(
         "version": version,
         "package": {
             "name": name,
-            "ecosystem": _OSV_ECOSYSTEM.get(ecosystem, "PyPI"),
+            "ecosystem": osv_ecosystem(ecosystem),
         },
     }
 
@@ -177,3 +197,8 @@ async def match_package(
         ecosystem=req.ecosystem,
         client=client,
     )
+
+
+#: 일괄 조회(inventory.osv_batch)가 같은 파싱을 쓴다 — 공개 이름.
+parse_severity = _parse_severity
+parse_fixed_version = _parse_fixed_version

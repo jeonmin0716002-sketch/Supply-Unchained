@@ -51,7 +51,7 @@ HIGH_TYPOSQUAT = 0.90
 TYPOSQUAT_WARN_FLOOR = 40
 
 
-def build_signals(name: str, meta: PackageMetadata) -> RiskSignals:
+def build_signals(name: str, meta: PackageMetadata, *, eco=None) -> RiskSignals:
     """Assemble the API ``RiskSignals`` from collected metadata.
 
     Typosquatting is computed from the name alone, so it still works even when
@@ -60,7 +60,10 @@ def build_signals(name: str, meta: PackageMetadata) -> RiskSignals:
     """
     return RiskSignals(
         is_new_account=features.is_new_package(meta.release_dates),
-        typosquat_score=features.typosquat_score(name),
+        # 이름 사칭 비교 대상은 생태계마다 다르다 (npm 의 lodash 를 PyPI 목록과 비교하면
+        # 의미 없는 점수가 나온다). eco 가 없으면 기존 PyPI 목록.
+        typosquat_score=(eco.typosquat_score(name) if eco is not None
+                         else features.typosquat_score(name)),
         has_install_script=meta.has_install_script,
         dependency_count=features.dependency_count(meta.requires_dist),
         release_burst=features.has_release_burst(meta.release_dates),
@@ -142,7 +145,10 @@ async def score_package(
     synthesises -- and widening the contract is a team decision, not one to
     make here.
     """
-    meta = await collect(req.name, req.version, ctx=ctx)
-    signals = build_signals(req.name, meta)
+    import ecosystems
+
+    eco = ecosystems.get(req.ecosystem.value)
+    meta = await collect(req.name, req.version, ctx=ctx, ecosystem=eco.id)
+    signals = build_signals(req.name, meta, eco=eco)
     score, _reasons = compute_score(signals)
     return signals, score

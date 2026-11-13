@@ -1,0 +1,4515 @@
+{
+ "summary": {
+  "previously_blocked": {
+   "releases": 74,
+   "analyzed": 71,
+   "removed": 2,
+   "errors": 1,
+   "blocked": 50,
+   "block_rate": 0.7042,
+   "wilson95": [
+    0.5898,
+    0.7977
+   ],
+   "rule_counts": {
+    "custom-install-time-exec": 34,
+    "custom-pth": 13,
+    "custom-install-hook": 1,
+    "custom-obfuscated-payload": 7
+   },
+   "blocked_releases": [
+    "agentwire-dev==1.72.0",
+    "ai-edge-litert-sdk-google-tensor-nightly==2.4.0.dev20261016",
+    "ai-edge-litert-sdk-google-tensor-nightly==2.4.0.dev20261017",
+    "ai-edge-litert-sdk-intel-nightly==2.4.0.dev20261016",
+    "ai-edge-litert-sdk-intel-nightly==2.4.0.dev20261017",
+    "ai-edge-litert-sdk-mediatek-nightly==2.4.0.dev20261017",
+    "ai-edge-litert-sdk-qualcomm-nightly==2.4.0.dev20261017",
+    "ai-edge-litert-sdk-samsung-nightly==2.4.0.dev20261016",
+    "ai-edge-litert-sdk-samsung-nightly==2.4.0.dev20261017",
+    "chatsorter-local==2.2.0",
+    "chromedriver-binary==157.0.8103.6.0",
+    "chromedriver-binary==158.0.8108.0.0",
+    "chromedriver-binary==158.0.8110.0.0",
+    "dagz==0.2.292.dev20261016124600",
+    "dagz==0.2.292.dev20261016141733",
+    "dagz==0.2.292.dev20261016145416",
+    "dagz==0.2.292.dev20261016163559",
+    "dagz==0.2.292.dev20261016175451",
+    "dagz==0.2.292.dev20261016232727",
+    "dagz==0.2.292.dev20261017045328",
+    "doeff-hy==0.6.0",
+    "fiberbrowser==3.0.1",
+    "gammonview-helper==0.9.0",
+    "haddock3==2026.10.1",
+    "hpcp==9.73",
+    "hpcp==9.74",
+    "hpcp==9.75",
+    "hpcp==9.76",
+    "hpcp==9.77",
+    "meerschaum==4.1.5",
+    "meerschaum==4.1.6",
+    "nvidia-cutlass-dsl==4.8.1",
+    "quantark==0.5.5",
+    "radboy==0.1.167",
+    "radboy==0.1.168",
+    "rubka==8.1.13",
+    "sigmaflow==0.0.94",
+    "sigmaflow==0.0.95",
+    "sr-harness==1.0.6",
+    "statblk==1.55",
+    "statbtrfs==0.36",
+    "trading-matrix-dashboard==1.0.0",
+    "trading-matrix-dashboard==1.0.4",
+    "triton-utlx-rocm==3.8.0.post1",
+    "ultralytics==8.4.179",
+    "ultralytics==8.4.180",
+    "ultralytics==8.4.181",
+    "ultralytics-opencv-headless==8.4.179",
+    "ultralytics-opencv-headless==8.4.180",
+    "ultralytics-opencv-headless==8.4.181"
+   ]
+  },
+  "random_sample": {
+   "releases": 500,
+   "analyzed": 486,
+   "removed": 8,
+   "errors": 6,
+   "blocked": 3,
+   "block_rate": 0.0062,
+   "wilson95": [
+    0.0021,
+    0.018
+   ],
+   "rule_counts": {
+    "custom-obfuscated-payload": 1,
+    "custom-pth": 1,
+    "custom-install-time-exec": 2
+   },
+   "blocked_releases": [
+    "hpcp==9.76",
+    "gammonview-helper==0.9.0",
+    "chromedriver-binary==158.0.8108.0.0"
+   ],
+   "population": 16181,
+   "seed": 20261113
+  }
+ },
+ "previously_blocked": [
+  {
+   "name": "agentwire-dev",
+   "version": "1.72.0",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "agentwire_dev-1.72.0/agentwire/mcp_voice.py:32",
+     "detail": "import 시점에 실행되는 네트워크 호출 urllib.request.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "ai-edge-litert-sdk-google-tensor-nightly",
+   "version": "2.4.0.dev20261016",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ai_edge_litert_sdk_google_tensor_nightly-2.4.0.dev20261016/setup.py:98",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    }
+   ]
+  },
+  {
+   "name": "ai-edge-litert-sdk-google-tensor-nightly",
+   "version": "2.4.0.dev20261017",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ai_edge_litert_sdk_google_tensor_nightly-2.4.0.dev20261017/setup.py:98",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    }
+   ]
+  },
+  {
+   "name": "ai-edge-litert-sdk-intel-nightly",
+   "version": "2.4.0.dev20261016",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ai_edge_litert_sdk_intel_nightly-2.4.0.dev20261016/setup.py:302",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    }
+   ]
+  },
+  {
+   "name": "ai-edge-litert-sdk-intel-nightly",
+   "version": "2.4.0.dev20261017",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ai_edge_litert_sdk_intel_nightly-2.4.0.dev20261017/setup.py:302",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    }
+   ]
+  },
+  {
+   "name": "ai-edge-litert-sdk-mediatek-nightly",
+   "version": "2.4.0.dev20261017",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ai_edge_litert_sdk_mediatek_nightly-2.4.0.dev20261017/setup.py:70",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    }
+   ]
+  },
+  {
+   "name": "ai-edge-litert-sdk-qualcomm-nightly",
+   "version": "2.4.0.dev20261017",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ai_edge_litert_sdk_qualcomm_nightly-2.4.0.dev20261017/setup.py:84",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    }
+   ]
+  },
+  {
+   "name": "ai-edge-litert-sdk-samsung-nightly",
+   "version": "2.4.0.dev20261016",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ai_edge_litert_sdk_samsung_nightly-2.4.0.dev20261016/setup.py:72",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    }
+   ]
+  },
+  {
+   "name": "ai-edge-litert-sdk-samsung-nightly",
+   "version": "2.4.0.dev20261017",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ai_edge_litert_sdk_samsung_nightly-2.4.0.dev20261017/setup.py:72",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    }
+   ]
+  },
+  {
+   "name": "chatsorter-local",
+   "version": "2.2.0",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chatsorter_local-2.2.0/src/chatsorter/api_local.py:221",
+     "detail": "import 시점에 실행되는 네트워크 호출 requests.post()"
+    }
+   ]
+  },
+  {
+   "name": "chromedriver-binary",
+   "version": "157.0.8103.6.0",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chromedriver_binary-157.0.8103.6.0/chromedriver_binary/utils.py:86",
+     "detail": "pip install 시 setup.py 가 불러 실행하는 네트워크 호출 urllib2.urlopen()"
+    },
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chromedriver_binary-157.0.8103.6.0/setup.py:47",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib2.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "chromedriver-binary",
+   "version": "158.0.8108.0.0",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chromedriver_binary-158.0.8108.0.0/chromedriver_binary/utils.py:86",
+     "detail": "pip install 시 setup.py 가 불러 실행하는 네트워크 호출 urllib2.urlopen()"
+    },
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chromedriver_binary-158.0.8108.0.0/setup.py:47",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib2.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "chromedriver-binary",
+   "version": "158.0.8110.0.0",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chromedriver_binary-158.0.8110.0.0/chromedriver_binary/utils.py:86",
+     "detail": "pip install 시 setup.py 가 불러 실행하는 네트워크 호출 urllib2.urlopen()"
+    },
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chromedriver_binary-158.0.8110.0.0/setup.py:47",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib2.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "dagz",
+   "version": "0.2.292.dev20261016124600",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "dagz-0.2.292.dev20261016124600.data/purelib/zzzz_dagz_bootstrap.pth:3",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import dagz.sensor.bootstrap; dagz.sensor.bootstrap.bootstrap()"
+    }
+   ]
+  },
+  {
+   "name": "dagz",
+   "version": "0.2.292.dev20261016141733",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "dagz-0.2.292.dev20261016141733.data/purelib/zzzz_dagz_bootstrap.pth:3",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import dagz.sensor.bootstrap; dagz.sensor.bootstrap.bootstrap()"
+    }
+   ]
+  },
+  {
+   "name": "dagz",
+   "version": "0.2.292.dev20261016145416",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "dagz-0.2.292.dev20261016145416.data/purelib/zzzz_dagz_bootstrap.pth:3",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import dagz.sensor.bootstrap; dagz.sensor.bootstrap.bootstrap()"
+    }
+   ]
+  },
+  {
+   "name": "dagz",
+   "version": "0.2.292.dev20261016163559",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "dagz-0.2.292.dev20261016163559.data/purelib/zzzz_dagz_bootstrap.pth:3",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import dagz.sensor.bootstrap; dagz.sensor.bootstrap.bootstrap()"
+    }
+   ]
+  },
+  {
+   "name": "dagz",
+   "version": "0.2.292.dev20261016175451",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "dagz-0.2.292.dev20261016175451.data/purelib/zzzz_dagz_bootstrap.pth:3",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import dagz.sensor.bootstrap; dagz.sensor.bootstrap.bootstrap()"
+    }
+   ]
+  },
+  {
+   "name": "dagz",
+   "version": "0.2.292.dev20261016232727",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "dagz-0.2.292.dev20261016232727.data/purelib/zzzz_dagz_bootstrap.pth:3",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import dagz.sensor.bootstrap; dagz.sensor.bootstrap.bootstrap()"
+    }
+   ]
+  },
+  {
+   "name": "dagz",
+   "version": "0.2.292.dev20261017045328",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "dagz-0.2.292.dev20261017045328.data/purelib/zzzz_dagz_bootstrap.pth:3",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import dagz.sensor.bootstrap; dagz.sensor.bootstrap.bootstrap()"
+    }
+   ]
+  },
+  {
+   "name": "doeff-hy",
+   "version": "0.6.0",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "doeff_hy-0.6.0/src/doeff_hy_bytecode_guard.pth:1",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import doeff_hy_bytecode_guard; doeff_hy_bytecode_guard.install()"
+    }
+   ]
+  },
+  {
+   "name": "fd-open-data-mcp",
+   "version": "0.5.38",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fiberbrowser",
+   "version": "3.0.1",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "fiberbrowser-3.0.1/browser/services/natural_language_commands.py:183",
+     "detail": "import 시점에 실행되는 네트워크 호출 urllib.request.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "fwquant",
+   "version": "1.0.140",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "gammonview-helper",
+   "version": "0.9.0",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "gammonview_helper-0.9.0/_gvhelper_startup.pth:1",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import _gvhelper_startup"
+    }
+   ]
+  },
+  {
+   "name": "haddock3",
+   "version": "2026.10.1",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "haddock3-2026.10.1/setup.py:155",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib.request.urlretrieve()"
+    },
+    {
+     "rule": "custom-install-hook",
+     "location": "haddock3-2026.10.1/setup.py:297",
+     "detail": "setup() overrides the ['develop', 'install'] command(s) via cmdclass — this code runs on the installing machine during 'pip install' and the overriding class calls an exec/network sink"
+    }
+   ]
+  },
+  {
+   "name": "hpcp",
+   "version": "9.73",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-obfuscated-payload",
+     "location": "hpcp-9.73/hpcp.py:187",
+     "detail": "obfuscated payload: lzma.decompress output is passed to exec() — decode-then-execute is a malware signature"
+    }
+   ]
+  },
+  {
+   "name": "hpcp",
+   "version": "9.74",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-obfuscated-payload",
+     "location": "hpcp-9.74/hpcp.py:187",
+     "detail": "obfuscated payload: lzma.decompress output is passed to exec() — decode-then-execute is a malware signature"
+    }
+   ]
+  },
+  {
+   "name": "hpcp",
+   "version": "9.75",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-obfuscated-payload",
+     "location": "hpcp-9.75/hpcp.py:187",
+     "detail": "obfuscated payload: lzma.decompress output is passed to exec() — decode-then-execute is a malware signature"
+    }
+   ]
+  },
+  {
+   "name": "hpcp",
+   "version": "9.76",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-obfuscated-payload",
+     "location": "hpcp-9.76/hpcp.py:187",
+     "detail": "obfuscated payload: lzma.decompress output is passed to exec() — decode-then-execute is a malware signature"
+    }
+   ]
+  },
+  {
+   "name": "hpcp",
+   "version": "9.77",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-obfuscated-payload",
+     "location": "hpcp-9.77/hpcp.py:187",
+     "detail": "obfuscated payload: lzma.decompress output is passed to exec() — decode-then-execute is a malware signature"
+    }
+   ]
+  },
+  {
+   "name": "jdaviz",
+   "version": "5.0.5",
+   "queue_status": "false_positive",
+   "status": "error",
+   "error": "PyPI lookup failed for jdaviz: "
+  },
+  {
+   "name": "leakdeep",
+   "version": "2.6.6",
+   "queue_status": "new",
+   "status": "removed"
+  },
+  {
+   "name": "meerschaum",
+   "version": "4.1.5",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "meerschaum-4.1.5/meerschaum/utils/typing.py:34",
+     "detail": "import 시점에 실행되는 네트워크 호출 urllib.request.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "meerschaum",
+   "version": "4.1.6",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "meerschaum-4.1.6/meerschaum/utils/typing.py:34",
+     "detail": "import 시점에 실행되는 네트워크 호출 urllib.request.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "ntgcalls",
+   "version": "3.0.4",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "nvidia-cutlass-dsl",
+   "version": "4.8.1",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "nvidia_cutlass_dsl_packages.pth:1",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import sys, os, nvidia_cutlass_dsl; sys.path.insert(0, os.path.join(nvidia_cutlass_dsl.__path__[0], 'dsl_packages'))"
+    }
+   ]
+  },
+  {
+   "name": "otpme",
+   "version": "0.3.0a283",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.10",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.12",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.13",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.16",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.17",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.18",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.19",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.8",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pigeon-home-runner",
+   "version": "3.7.9",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "quantark",
+   "version": "0.5.5",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "quantark-0.5.5/quantark_compat.pth:1",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import quantark._compat"
+    }
+   ]
+  },
+  {
+   "name": "radboy",
+   "version": "0.1.167",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "radboy-0.1.167/radboy/x.py:8",
+     "detail": "import 시점에 실행되는 네트워크 호출 requests.get()"
+    }
+   ]
+  },
+  {
+   "name": "radboy",
+   "version": "0.1.168",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "radboy-0.1.168/radboy/x.py:8",
+     "detail": "import 시점에 실행되는 네트워크 호출 requests.get()"
+    }
+   ]
+  },
+  {
+   "name": "rapid-mlx",
+   "version": "0.16.3",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "reqeusts",
+   "version": "1.0.0",
+   "queue_status": null,
+   "status": "removed"
+  },
+  {
+   "name": "rpi-hwid",
+   "version": "0.0.post607",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "rubka",
+   "version": "8.1.13",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "rubka-8.1.13/rubka/__init__.py:68",
+     "detail": "import 시점에 실행되는 네트워크 호출 requests.get()"
+    }
+   ]
+  },
+  {
+   "name": "rutis",
+   "version": "0.11.0",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "seleniumbase",
+   "version": "4.56.2",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sigmaflow",
+   "version": "0.0.94",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "sigmaflow-0.0.94/src/sigmaflow/version.py:7",
+     "detail": "import 시점에 실행되는 네트워크 호출 urllib.request.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "sigmaflow",
+   "version": "0.0.95",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "sigmaflow-0.0.95/src/sigmaflow/version.py:7",
+     "detail": "import 시점에 실행되는 네트워크 호출 urllib.request.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "smartmemory",
+   "version": "1.5.27",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sr-harness",
+   "version": "1.0.6",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "sr_harness-1.0.6/src/sr_harness/_vendor/llmsr_bench/algorithms/sr_scientist.py:133",
+     "detail": "import 시점에 실행되는 네트워크 호출 socket.create_connection()"
+    }
+   ]
+  },
+  {
+   "name": "statblk",
+   "version": "1.55",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-obfuscated-payload",
+     "location": "statblk-1.55/statblk.py:177",
+     "detail": "obfuscated payload: lzma.decompress output is passed to exec() — decode-then-execute is a malware signature"
+    }
+   ]
+  },
+  {
+   "name": "statbtrfs",
+   "version": "0.36",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-obfuscated-payload",
+     "location": "statbtrfs-0.36/statbtrfs.py:166",
+     "detail": "obfuscated payload: lzma.decompress output is passed to exec() — decode-then-execute is a malware signature"
+    }
+   ]
+  },
+  {
+   "name": "tocode-cli",
+   "version": "0.3.2",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "trading-matrix-dashboard",
+   "version": "1.0.0",
+   "queue_status": "new",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "trading_matrix_dashboard-1.0.0/trading_matrix/main.py:29",
+     "detail": "import 시점에 실행되는 네트워크 호출 requests.post()"
+    }
+   ]
+  },
+  {
+   "name": "trading-matrix-dashboard",
+   "version": "1.0.2",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "trading-matrix-dashboard",
+   "version": "1.0.3",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "trading-matrix-dashboard",
+   "version": "1.0.4",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "trading_matrix_dashboard-1.0.4/trading_matrix/main.py:52",
+     "detail": "import 시점에 실행되는 네트워크 호출 requests.post()"
+    }
+   ]
+  },
+  {
+   "name": "triton-utlx-rocm",
+   "version": "3.8.0.post1",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "utlx_plugin.pth:3",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import _utlx_autoregister"
+    },
+    {
+     "rule": "custom-pth",
+     "location": "utlx_plugin.pth:6",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import _utlx_fbtriton"
+    }
+   ]
+  },
+  {
+   "name": "ultralytics",
+   "version": "8.4.179",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ultralytics-8.4.179/ultralytics/utils/__init__.py:880",
+     "detail": "import 시점에 실행되는 네트워크 호출 socket.getaddrinfo()"
+    }
+   ]
+  },
+  {
+   "name": "ultralytics",
+   "version": "8.4.180",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ultralytics-8.4.180/ultralytics/utils/__init__.py:880",
+     "detail": "import 시점에 실행되는 네트워크 호출 socket.getaddrinfo()"
+    }
+   ]
+  },
+  {
+   "name": "ultralytics",
+   "version": "8.4.181",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ultralytics-8.4.181/ultralytics/utils/__init__.py:880",
+     "detail": "import 시점에 실행되는 네트워크 호출 socket.getaddrinfo()"
+    }
+   ]
+  },
+  {
+   "name": "ultralytics-opencv-headless",
+   "version": "8.4.179",
+   "queue_status": "false_positive",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ultralytics_opencv_headless-8.4.179/ultralytics/utils/__init__.py:880",
+     "detail": "import 시점에 실행되는 네트워크 호출 socket.getaddrinfo()"
+    }
+   ]
+  },
+  {
+   "name": "ultralytics-opencv-headless",
+   "version": "8.4.180",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ultralytics_opencv_headless-8.4.180/ultralytics/utils/__init__.py:880",
+     "detail": "import 시점에 실행되는 네트워크 호출 socket.getaddrinfo()"
+    }
+   ]
+  },
+  {
+   "name": "ultralytics-opencv-headless",
+   "version": "8.4.181",
+   "queue_status": null,
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "ultralytics_opencv_headless-8.4.181/ultralytics/utils/__init__.py:880",
+     "detail": "import 시점에 실행되는 네트워크 호출 socket.getaddrinfo()"
+    }
+   ]
+  }
+ ],
+ "random_sample": [
+  {
+   "name": "ceres-engine",
+   "version": "0.49.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agent-security-harness",
+   "version": "4.27.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "socmintelligence",
+   "version": "1.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "buntubi",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "graphiti-local",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "undefined-bot",
+   "version": "3.18.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pachifast-metrics",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tusk-ml",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aden-hive",
+   "version": "1.0.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "lastorders",
+   "version": "0.4.5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aspose-cells",
+   "version": "26.10.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mcp-elm",
+   "version": "1.0.38",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "bzapper",
+   "version": "0.9.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "axio-audio",
+   "version": "0.12.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "angineer-sop-core",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "hpcp",
+   "version": "9.76",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-obfuscated-payload",
+     "location": "hpcp-9.76/hpcp.py:187",
+     "detail": "obfuscated payload: lzma.decompress output is passed to exec() — decode-then-execute is a malware signature"
+    }
+   ]
+  },
+  {
+   "name": "anyinit",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "modern-httplib2",
+   "version": "1.32.0.post2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "besen",
+   "version": "0.5.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "octostar-python-client",
+   "version": "0.1.1074",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ez",
+   "version": "11.8.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ai-llm-kernel-router",
+   "version": "0.1.0a5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "evoscientist",
+   "version": "0.3.7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tfbpseudo",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "managed-deepagents",
+   "version": "0.9.4.dev4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "afterlink",
+   "version": "2.0.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "phlo-nessie",
+   "version": "0.17.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "powerview-connect",
+   "version": "1.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ragleap-observability",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "swarmkit-runtime",
+   "version": "1.263.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "project-llm-trainer",
+   "version": "0.24.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "explore-ct-120-reconstruction-algorithms",
+   "version": "0.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "marin-haliax",
+   "version": "0.2.198.dev38999888318",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "py-ballisticcalc-exts",
+   "version": "3.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vis-agent",
+   "version": "0.2.50.dev7735",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "keba-keenergy-api",
+   "version": "2.13.0b1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "xrtm",
+   "version": "0.10.5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "django-newadmin",
+   "version": "0.1.0a1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "scubiee",
+   "version": "0.3.149",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "amplifier-core",
+   "version": "2.0.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "loopy-agent-fs",
+   "version": "0.0.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "standardbots",
+   "version": "2.20260921.41",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "revenant",
+   "version": "4.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "hugpy-core",
+   "version": "0.4.45",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "forge-dashboard-sdk",
+   "version": "2.0.47",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "probative-labs",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pytexl",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "efa",
+   "version": "2026.10.17",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "calico-lib",
+   "version": "0.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "seattle-open-data",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-ssm-guiconnect",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "toposync-ext-home-assistant",
+   "version": "0.10.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "superdoc-sdk",
+   "version": "2.21.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tbb",
+   "version": "2023.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "autoarray",
+   "version": "2026.10.16.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "globalproof-ai",
+   "version": "0.2.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "locan",
+   "version": "0.22.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "reddrix",
+   "version": "0.2.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "scitex-stats",
+   "version": "0.2.34",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "unitelabs-cdk",
+   "version": "0.16.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "hugpy-core",
+   "version": "0.4.27",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "dossier-bench",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "satkas",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "huri-module-rag",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fawaterak",
+   "version": "0.5.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "meegxer-nodes",
+   "version": "0.3.0b1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "anolis-workbench",
+   "version": "0.17.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mcp-server-everything-search",
+   "version": "0.3.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "kist",
+   "version": "0.1.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "piot-fixture-zzz-python-no-rust",
+   "version": "0.0.1792162301",
+   "status": "removed"
+  },
+  {
+   "name": "qontract-reconcile",
+   "version": "0.10.2.dev908",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ja3-client",
+   "version": "1.2.7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ghl-pro-mcp",
+   "version": "0.2.9",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mkl-devel",
+   "version": "2026.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "lg-rs232-tv",
+   "version": "1.3.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "azure-functions-logging",
+   "version": "0.15.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ellf-recipes-pdf",
+   "version": "0.1.254",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sourceindex",
+   "version": "0.2.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "dsoxlab",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agentpay-gateway",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "3tears-agent-skills",
+   "version": "0.70.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "quotekit",
+   "version": "0.9.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-oam",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "py-aniliberty",
+   "version": "1.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-s3-control",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "polyai-adk",
+   "version": "0.71.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "polestar-dpapi-client",
+   "version": "1.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "wandelbots-api-client",
+   "version": "26.8.0.dev125",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "statikomand",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "braindecode",
+   "version": "1.8.1.dev184031250",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "autoware-carla-scenario",
+   "version": "12.8.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "livery-extensions-basedpyright",
+   "version": "0.3.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "xrtm-eval",
+   "version": "0.3.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "gutenbergpy",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "xyz17711-web-scraper",
+   "version": "0.1.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-devops-agent",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "matter-python-client",
+   "version": "1.5.0a0.dev202610171259",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "crowdypy",
+   "version": "0.14.1rc1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "hlock",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fibaro-flua",
+   "version": "0.1.42",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "postboost",
+   "version": "1.53.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "dcc-mcp-openusd",
+   "version": "0.11.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "containerhive",
+   "version": "1.12.6",
+   "status": "error",
+   "error": "containerhive-1.12.6-py3-none-macosx_10_9_x86_64.whl is 88660973 bytes, over the 31457280 byte limit"
+  },
+  {
+   "name": "janus-requests",
+   "version": "0.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "flin-linkedin-posts-mcp",
+   "version": "0.2.9",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-verifiedpermissions",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "systemd-pydantic",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "nexus-agent-ai",
+   "version": "2.10.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "rekursiv-ai-typings",
+   "version": "2026.10.16",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "weni-cli",
+   "version": "3.9.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tabsdata-conn-bigquery",
+   "version": "2.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-sesv2",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "victor-contracts",
+   "version": "0.10.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mcptoon",
+   "version": "0.8.22",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-mwaa",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "skillsaw",
+   "version": "0.22.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "odoo-addons-oca-l10n-paraguay",
+   "version": "19.0.20261012.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "derico-blicca-actionsblock",
+   "version": "1.0.0a6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pymobiledevice3",
+   "version": "11.33.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "marin-fray",
+   "version": "0.2.192.dev38885488891",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "keel-context",
+   "version": "0.23.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sheath",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pymoku-sdk",
+   "version": "0.6.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pymagnum",
+   "version": "2.0.8a2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "openadapt-desktop",
+   "version": "0.18.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "qca-compiler",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "artinkit",
+   "version": "0.4.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sequence-ai",
+   "version": "0.36.10",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-artifact",
+   "version": "0.10.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "stats-compass-core",
+   "version": "0.1.41",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agent-style",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sccoord",
+   "version": "1.9.9",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pyedaa-reports",
+   "version": "0.20.0rc2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "omniplc",
+   "version": "0.56.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "modern-di-aiogram",
+   "version": "4.3.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "paybox-robot",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "octostar-python-client",
+   "version": "0.1.1072",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "speiidev",
+   "version": "1.4.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "acctswap",
+   "version": "0.2.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "speechall",
+   "version": "2.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vaquum-limen",
+   "version": "5.30.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "toki",
+   "version": "1.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "rimulabs-trends",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "cashd",
+   "version": "0.5.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tellproof",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "inspect-glovebox",
+   "version": "0.4.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "steve-cli",
+   "version": "1.1.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "okfsmith",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "xprof-nightly",
+   "version": "2.25.0a20261016",
+   "status": "error",
+   "error": "xprof_nightly-2.25.0a20261016-py3-none-macosx_11_0_arm64.whl is 45087571 bytes, over the 31457280 byte limit"
+  },
+  {
+   "name": "pkginfo",
+   "version": "2.0b1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "camina",
+   "version": "0.2.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "regula-documentreader-webclient",
+   "version": "9.10.1089rc0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "meridian-vpn",
+   "version": "4.0.0b5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "commol",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "xrtm-data",
+   "version": "0.7.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "loki-mode-sdk",
+   "version": "11.17.57",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fastbase91",
+   "version": "0.1.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pasteup",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "topicsleuth",
+   "version": "0.3.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aoa-action-machine",
+   "version": "1.0.1a4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "paranoid-atlas-cli",
+   "version": "0.14.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mneva",
+   "version": "0.4.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "wave-fixture-ai",
+   "version": "0.4.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "faida-mcp",
+   "version": "0.1.7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "3tears-object-store",
+   "version": "0.70.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pylocal-akuvox",
+   "version": "1.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "neutron-bsdbridge",
+   "version": "0.9.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "craterview",
+   "version": "0.4.23",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "rattle-lint",
+   "version": "3.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "hugpy-core",
+   "version": "0.4.41",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "glocaltokens",
+   "version": "0.9.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "scc-firewall-manager-sdk",
+   "version": "1.23.366",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "maptitude",
+   "version": "0.6.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ha-mcp-dev",
+   "version": "8.7.0.dev3067",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "whitebox-plugin-device-status",
+   "version": "0.1.14",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ankaloop",
+   "version": "0.17.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "openlr-decoder",
+   "version": "0.2.7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "risex-python-sdk",
+   "version": "0.1.0a3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fastpocketoption-api",
+   "version": "1.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "bazis-notify",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "isox",
+   "version": "3.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "dailo-devtools",
+   "version": "0.1.5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "runspec-console",
+   "version": "0.346.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "runta-sdk",
+   "version": "0.2.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-route-53",
+   "version": "0.16.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "byteplussdk-ecs20251101",
+   "version": "0.0.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "meegxer-cli",
+   "version": "0.2.1a2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "getanyapi",
+   "version": "0.115.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "devguard-scanner",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "skmemory",
+   "version": "0.11.41",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "robot-hat",
+   "version": "3.3.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "amesa-inference-dev",
+   "version": "0.42.8.dev3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "openmymemo",
+   "version": "0.2.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "toolviper",
+   "version": "0.1.12",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "comfyui-workflow-templates-json",
+   "version": "0.1.113",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "veragridengine",
+   "version": "6.7.15",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "autoforge-trainer",
+   "version": "1.4.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "flowcypy",
+   "version": "1.2.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pseudolife-mcp",
+   "version": "0.18.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "coxswain",
+   "version": "0.40.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mpt",
+   "version": "1.3.8",
+   "status": "error",
+   "error": "mpt-1.3.8.tar.gz is 96936128 bytes, over the 31457280 byte limit"
+  },
+  {
+   "name": "svy",
+   "version": "0.35.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "wasmtime-bin",
+   "version": "49.0.3.post1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "odoo-devops-tools",
+   "version": "1.24.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "invisible-core",
+   "version": "48.41.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-polly",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "patchright-cli",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mcp-server-appwrite",
+   "version": "1.0.19",
+   "status": "error",
+   "error": "mcp_server_appwrite-1.0.19.tar.gz is 36447456 bytes, over the 31457280 byte limit"
+  },
+  {
+   "name": "funread-api",
+   "version": "1.1.127",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "autoware-carla-scenario",
+   "version": "12.9.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "update-kit",
+   "version": "0.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "hsbc-tradetrack-mcp",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "trivikrama",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "dazzle-dsl",
+   "version": "0.121.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agentcomms-secure",
+   "version": "0.3.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "thds-termtool",
+   "version": "1.0.20261017011540",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "docker-devkit",
+   "version": "0.4.7.dev156",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tabsdata-conn-druid",
+   "version": "2.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "astral-dev-toolchain-release-plz",
+   "version": "0.3.170",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "multicmd",
+   "version": "1.54",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "containarium-telemetry",
+   "version": "0.106.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "viscalc",
+   "version": "0.1.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "solverpilot",
+   "version": "0.4.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "wechat-cli",
+   "version": "0.2.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "emutrust",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pazair",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "policyengine",
+   "version": "6.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "redundanet",
+   "version": "2.7.36",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "grantr",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "managed-deepagents",
+   "version": "0.10.0.dev8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "exif-stripper",
+   "version": "1.3.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "cybrid-api-id-python",
+   "version": "0.129.1312",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mindroom",
+   "version": "2026.10.335",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tasleemat",
+   "version": "2.6.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "medharness",
+   "version": "0.64.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pulumi-provider-fivetran",
+   "version": "1.9.51",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "cg-code-graph",
+   "version": "0.21.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "odoobuddy",
+   "version": "0.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "patchwork-core",
+   "version": "2.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "hugpy-core",
+   "version": "0.4.44",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "android-agent-harness",
+   "version": "1.1.30",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "rabbitmq-easy",
+   "version": "1.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "modern-di-pytest",
+   "version": "4.0.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ferrygl",
+   "version": "0.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "linkmerce",
+   "version": "1.0.18",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "naija-data",
+   "version": "1.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "nucore-ai",
+   "version": "3.0.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "byteplussdk-directconnect",
+   "version": "0.0.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-partnercentral-revenue-measurement",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mtg-ssm",
+   "version": "2.8.3.dev2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "banditdb-python",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pandorafits",
+   "version": "0.9.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "arthur-observability-sdk",
+   "version": "2.1.1019.dev0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "priorityx",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tg-signer-plus",
+   "version": "1.0.16",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "experiential",
+   "version": "0.7.191",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "jupyterlab-advanced-markdown-viewer-extension",
+   "version": "1.0.33",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "getterdone",
+   "version": "1.2.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "bioamla",
+   "version": "0.2.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-ssm-contacts",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "odoo-addon-website-sale-stock-provisioning-date",
+   "version": "18.0.1.0.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "akari-bot-webui",
+   "version": "0.5.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pyportscan",
+   "version": "1.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "lamp-the-djinn",
+   "version": "0.1.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pyicat-plus",
+   "version": "3.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "obffile",
+   "version": "2026.10.18",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pydecide",
+   "version": "0.2.10",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mainsequence-metatable",
+   "version": "0.1.42",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "arcadedb-driver-grpc",
+   "version": "0.3.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "lotic",
+   "version": "0.0.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-snow-device-management",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "odm-cert-generator",
+   "version": "0.2.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-autoscaling",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "routemark",
+   "version": "0.1.0b41",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pulumi",
+   "version": "3.271.0a1792182806",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vis-agent",
+   "version": "0.2.52.dev7747",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "wrabbit",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-marketplace-reporting",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "devready-cli",
+   "version": "1.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "civics-cdf-validator",
+   "version": "1.66.dev8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "openremap",
+   "version": "0.7.7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "invisible-core",
+   "version": "49.44.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "braindecode",
+   "version": "1.8.1.dev175672970",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "kapitan",
+   "version": "0.36.4.dev7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vouch-paper",
+   "version": "0.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "modern-di-celery",
+   "version": "4.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tavus",
+   "version": "0.10.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-iotfleetwise",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "forge-dashboard-sdk",
+   "version": "2.0.38",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "openhound",
+   "version": "0.4.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agentic-workbench",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "motui",
+   "version": "1.1.5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-opensearch",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "beaconcrypt",
+   "version": "0.5.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "synapse-runtime-sdk-video",
+   "version": "0.3.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agent-connector-sdk",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-serverlessrepo",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pipx",
+   "version": "1.18.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "eigenpal",
+   "version": "0.20.54",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "exp-runtime-engine",
+   "version": "0.6.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "cognivoy",
+   "version": "1.5.11",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mazip",
+   "version": "0.1.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "oatschema",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "cybrid-api-organization-python",
+   "version": "0.129.1312",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "metacausal",
+   "version": "0.7.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "conlanggen",
+   "version": "1.16.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "rea-mcp",
+   "version": "0.1.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "novilabs-pmi-lab",
+   "version": "0.dev0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "bzapper",
+   "version": "0.9.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "heyecco",
+   "version": "0.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "notion-search",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "django-rust-templates",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ccswap",
+   "version": "0.38.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fibaro-flua",
+   "version": "0.1.49",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "factorion-server",
+   "version": "0.7.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "molgfx",
+   "version": "0.5.6",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "loki-mode-sdk",
+   "version": "11.17.33",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "bbi-variant-annotation",
+   "version": "1.2.0b3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "py-runner-kernel",
+   "version": "0.1.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "madlysimple",
+   "version": "0.1.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "uipath-platform",
+   "version": "0.2.40",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "somm-mcp",
+   "version": "0.19.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tai42-e2e",
+   "version": "19.0.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-drs",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "modern-di-grpc",
+   "version": "4.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mywebscrcpy-sdk",
+   "version": "1.26.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vecforge",
+   "version": "2.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "hk-ipo-fee-mcp",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "niess",
+   "version": "0.12.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "interplay-adversarial",
+   "version": "0.4.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tracepanel",
+   "version": "0.3.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "uprelic",
+   "version": "0.3.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tokenfold",
+   "version": "0.5.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "xdog-flow",
+   "version": "2.4.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "eigenpal",
+   "version": "0.20.49",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "asterwise",
+   "version": "0.12.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "witbitz-code",
+   "version": "1.7.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "octostar-python-client",
+   "version": "0.1.1075",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "prism-news",
+   "version": "0.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "rootcoz",
+   "version": "4.7.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sram-engine",
+   "version": "1.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "code-standards",
+   "version": "8.74.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "downctl",
+   "version": "0.1.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-sfn",
+   "version": "0.14.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "quantumbox-sdk",
+   "version": "2026.10.16.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "acbr-python",
+   "version": "0.1.0a4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "piot-fixture-zzz-python-no-rust-fp",
+   "version": "0.0.1792165853",
+   "status": "removed"
+  },
+  {
+   "name": "basal-client",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ol-llm",
+   "version": "0.0.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "astroway",
+   "version": "1.11.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "cad-to-dagmc-mesher",
+   "version": "0.3.7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "wb-personal-drive-query-mcp",
+   "version": "1.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "imgread",
+   "version": "0.3.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "skmemory",
+   "version": "0.11.34",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "anki-mcp-server",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agentic-runner-contracts",
+   "version": "3.26.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "piot-fixture-zzz-python-sdist",
+   "version": "0.0.1792162704",
+   "status": "removed"
+  },
+  {
+   "name": "icegrams-data",
+   "version": "0.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vishap-analyzer",
+   "version": "6.4.0",
+   "status": "removed"
+  },
+  {
+   "name": "forge-shadow",
+   "version": "4.8.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "offspot-config",
+   "version": "2.10.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "croatian-stemmer",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "meterbase",
+   "version": "0.5.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "graphlay",
+   "version": "0.3.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "cashd-core",
+   "version": "0.5.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "annzarro",
+   "version": "0.5.5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "geometrykit",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "nagents",
+   "version": "0.23.16",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "reflectapi-runtime",
+   "version": "0.21.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "omnibase-core",
+   "version": "0.47.45",
+   "status": "error",
+   "error": "archive has more than 5000 members"
+  },
+  {
+   "name": "meterbase",
+   "version": "0.5.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "dime-python-sdk",
+   "version": "1.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "bytestruct",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "my-llm-py",
+   "version": "1.0.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "imgad",
+   "version": "0.3.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "visitingcard",
+   "version": "0.0.21",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "io-magiclinks",
+   "version": "0.2.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fshot",
+   "version": "0.0.24",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "code-standards",
+   "version": "8.72.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tensorpotential",
+   "version": "0.6.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "reqdeck",
+   "version": "0.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "opengeode-core",
+   "version": "19.0.1rc4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "wiki-studio",
+   "version": "0.3.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "abysshub",
+   "version": "0.1.2.dev2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agentevo-cloud",
+   "version": "0.2.7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sbmlsim",
+   "version": "0.9.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "netspy",
+   "version": "1.3.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fluxgram-plugin-devkit",
+   "version": "2.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "nemo-online-training",
+   "version": "1.3.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "teddy-cli",
+   "version": "0.1.17.dev1300",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "saina",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "anycubic-cloud-api",
+   "version": "0.4.36",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "roboflow-workflows",
+   "version": "0.2.10rc2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "smoldyn",
+   "version": "2.77.dev202610170535",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pixi-sbom",
+   "version": "1.15.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "gammonview-helper",
+   "version": "0.9.0",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-pth",
+     "location": "gammonview_helper-0.9.0/_gvhelper_startup.pth:1",
+     "detail": "'.pth' file executes code at interpreter startup (site.py runs this line in every Python process): import _gvhelper_startup"
+    }
+   ]
+  },
+  {
+   "name": "chromedriver-binary",
+   "version": "158.0.8108.0.0",
+   "status": "ok",
+   "blocked": true,
+   "high": [
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chromedriver_binary-158.0.8108.0.0/chromedriver_binary/utils.py:86",
+     "detail": "pip install 시 setup.py 가 불러 실행하는 네트워크 호출 urllib2.urlopen()"
+    },
+    {
+     "rule": "custom-install-time-exec",
+     "location": "chromedriver_binary-158.0.8108.0.0/setup.py:47",
+     "detail": "pip install 시 설치 훅이 실행하는 네트워크 호출 urllib2.urlopen()"
+    }
+   ]
+  },
+  {
+   "name": "scriptoria",
+   "version": "0.11.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "oto-core",
+   "version": "1.180.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "copick-utils",
+   "version": "1.10.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "protspace",
+   "version": "4.16.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mujoco-warp-lucidrains-fork",
+   "version": "0.0.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "beauty-log",
+   "version": "0.1.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "palanit-core",
+   "version": "0.1.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "automonkey",
+   "version": "0.4.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agent-handshake",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "clio-agent",
+   "version": "0.9.5b7.post2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sdpy-kit",
+   "version": "0.4.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "githeri",
+   "version": "0.4.11",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "managed-deepagents",
+   "version": "0.9.3.dev30",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ukraine69",
+   "version": "1.2.0",
+   "status": "removed"
+  },
+  {
+   "name": "generic-lang",
+   "version": "3.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-sagemaker-featurestore-runtime",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "buysmarter",
+   "version": "0.1.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "whetstone-ai",
+   "version": "0.1.18",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "gini-teaching-center",
+   "version": "6.20.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ai-llm-kernel-provider-mistral",
+   "version": "0.1.0a5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pulumi-kubernetes",
+   "version": "4.35.0a1792255684",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-cloud9",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "flieber",
+   "version": "0.1.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "runspec-console",
+   "version": "0.345.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "kollab",
+   "version": "0.16.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "talqing",
+   "version": "0.12.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "shap",
+   "version": "0.54.1rc0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "fixmyslop",
+   "version": "0.6.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tai42-storage-local",
+   "version": "2.0.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "msts-trader",
+   "version": "0.47.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-elasticache",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "seren-observatory",
+   "version": "5.2.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "rosbags",
+   "version": "0.11.8",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sitecard",
+   "version": "0.1.7",
+   "status": "removed"
+  },
+  {
+   "name": "pyvar-mcp",
+   "version": "0.2.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "nsb-py",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sciqlopplots",
+   "version": "0.52.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-waf-regional",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "d3dtools",
+   "version": "0.36.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "beta9",
+   "version": "0.1.289",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "unitx",
+   "version": "0.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "epita-ease",
+   "version": "0.2.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "runtimed",
+   "version": "2.8.7a202610160747",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "decimo",
+   "version": "0.16.0.dev20261016185443",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "judoscale",
+   "version": "1.13.5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vaultrun-sdk",
+   "version": "0.4.5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pyjoulescope-driver",
+   "version": "2.5.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "timeglance",
+   "version": "3.5.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "nexus-mcp",
+   "version": "2.1.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pytooling-sphinx",
+   "version": "0.1.0rc2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "spaday-perspective",
+   "version": "0.7.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "chat-mother-forker",
+   "version": "0.2.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pyrig-opensource",
+   "version": "1.2.16",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "gryfsmartio",
+   "version": "0.3.3",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "opteryx-core",
+   "version": "0.9.171",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "piot-fixture-zzz-python-maturin",
+   "version": "0.0.1792165851",
+   "status": "removed"
+  },
+  {
+   "name": "magicbox-dk",
+   "version": "1.14.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "verifiers",
+   "version": "0.4.1.dev30",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pyhyypapihawkmod",
+   "version": "1.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mkl",
+   "version": "2026.2.0",
+   "status": "error",
+   "error": "mkl-2026.2.0-py2.py3-none-manylinux_2_28_x86_64.whl is 221067932 bytes, over the 31457280 byte limit"
+  },
+  {
+   "name": "nudge-policy",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "evnx",
+   "version": "0.10.5",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "dcc-mcp-core",
+   "version": "0.20.45",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "eyepiece",
+   "version": "0.15.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "samplemaker-sparrow",
+   "version": "6.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "eigenpal",
+   "version": "0.20.56",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "testudos",
+   "version": "0.33.28",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "smoldyn",
+   "version": "2.77.dev202610170534",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "membrick",
+   "version": "0.6.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "capo-ssm-sap",
+   "version": "0.8.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "finos-cdm",
+   "version": "7.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ff-iii-luciferin",
+   "version": "1.2.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "infinitydb-ai",
+   "version": "1.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vis-agent",
+   "version": "0.2.51",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "kanbus",
+   "version": "0.34.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "brightpath",
+   "version": "1.0.0a7",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "odoo-addon-sale-exception",
+   "version": "19.0.1.0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "less-tokens",
+   "version": "0.8.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-networking",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "ukraine69",
+   "version": "1.2.8",
+   "status": "removed"
+  },
+  {
+   "name": "cycloidgen",
+   "version": "8.0.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "renoise-kit",
+   "version": "0.5.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aind-ephys-ibl-gui-conversion",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pictograph",
+   "version": "1.69.108",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "poseviz",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "scc-firewall-manager-sdk",
+   "version": "1.23.386",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "tinkerfin-agui-adapter",
+   "version": "0.1.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "mljar-supervised",
+   "version": "1.4.0rc4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "agentfield",
+   "version": "0.1.142rc14",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "zotero-library-mcp",
+   "version": "0.10.1",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "meshcore",
+   "version": "2.3.17",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "scodoc-api",
+   "version": "1.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "vibops-mcp",
+   "version": "0.56.2",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "pimp-my-repo",
+   "version": "1.1.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "motedb-python",
+   "version": "0.15.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "sema-core",
+   "version": "2.1.4",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aws-resource-validator-lexv2-models",
+   "version": "2.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aerokit",
+   "version": "1.4.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "gitd",
+   "version": "0.7.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "temper-hq",
+   "version": "0.6.0",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "aind-metadata-extractor",
+   "version": "0.3.13",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "nbp-rates",
+   "version": "1.7.20261018",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  },
+  {
+   "name": "matter-ble-proxy",
+   "version": "1.5.0a0.dev202610171259",
+   "status": "ok",
+   "blocked": false,
+   "high": []
+  }
+ ]
+}

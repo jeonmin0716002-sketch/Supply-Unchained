@@ -276,6 +276,98 @@ class _DecoderIndex:
         return None
 
 
+# ── vendoring 해독 (실행 없이) ────────────────────────────────────
+# 신규 업로드 실측 오탐 hpcp·statblk·statbtrfs (docs/eval/watch-new-uploads.md §P3): 같은 저자의
+# 라이브러리 multiCMD 를 ``exec(lzma.decompress(base64.a85decode(...)), multiCMD.__dict__)`` 로
+# 다른 모듈의 네임스페이스에 심는다. 모양은 악성 시그니처와 같다. 그래서 **네임스페이스가
+# 다른 모듈의 __dict__ 일 때만** 해독해서, 해독된 소스를 "import 되는 모듈"로 다시 분석한다
+# (그 exec 는 모듈 import 와 같다 — 최상단만 돈다). import 시점에 위험 행위가 없으면 MEDIUM.
+# ``exec(code)``·``exec(code, globals())`` 는 바깥 코드가 해독된 함수를 나중에 부를 수 있어
+# 그대로 HIGH 다.
+
+_MAX_DECODED = 8 * 1024 * 1024
+
+
+def _module_namespace(call: ast.Call) -> bool:
+    """exec 의 두 번째 인자가 ``<모듈>.__dict__`` 또는 ``vars(<모듈>)`` 인가."""
+    if len(call.args) < 2:
+        return False
+    ns = call.args[1]
+    if isinstance(ns, ast.Attribute) and ns.attr == "__dict__" and isinstance(ns.value, ast.Name):
+        return True
+    return (isinstance(ns, ast.Call) and isinstance(ns.func, ast.Name) and ns.func.id == "vars"
+            and len(ns.args) == 1 and isinstance(ns.args[0], ast.Name))
+
+
+def _static_decode(expr: ast.AST, consts: dict[str, ast.AST], depth: int = 0) -> bytes | None:
+    """디코더 체인을 **실행하지 않고** 표준 라이브러리 해독 함수로만 푼다. 상한 초과·모르는
+    함수는 None (해독 실패 → 원래대로 HIGH)."""
+    import base64
+    import bz2
+    import lzma
+    import zlib
+
+    if depth > 8:
+        return None
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, (str, bytes)):
+        v = expr.value
+        return v.encode("latin-1", "ignore") if isinstance(v, str) else v
+    if isinstance(expr, ast.Name) and expr.id in consts:
+        return _static_decode(consts[expr.id], consts, depth + 1)
+    if not isinstance(expr, ast.Call):
+        return None
+    name = dotted_name(expr.func) or ""
+    # ``<호출>.decode("utf-8")`` 은 수신자가 호출식이라 점 이름이 안 나온다 — 속성 이름으로 본다
+    func = expr.func.attr if isinstance(expr.func, ast.Attribute) else name.rpartition(".")[2]
+    if func == "decode" and isinstance(expr.func, ast.Attribute) and len(expr.args) <= 1:
+        return _static_decode(expr.func.value, consts, depth + 1)
+    if not expr.args:
+        return None
+    data = _static_decode(expr.args[0], consts, depth + 1)
+    if data is None:
+        return None
+    try:
+        if func in ("b64decode", "urlsafe_b64decode", "a85decode", "b85decode", "b32decode",
+                    "b16decode"):
+            return getattr(base64, func)(data)
+        if func == "decompress":
+            mod = name.rpartition(".")[0].split(".")[-1]
+            dec = {"zlib": lambda: zlib.decompressobj(), "lzma": lambda: lzma.LZMADecompressor(),
+                   "bz2": lambda: bz2.BZ2Decompressor()}.get(mod)
+            if dec is None:
+                return None
+            d = dec()
+            out = d.decompress(data, _MAX_DECODED + 1)
+            return None if len(out) > _MAX_DECODED else out
+    except (ValueError, TypeError, lzma.LZMAError, zlib.error, OSError, EOFError):
+        return None
+    return None
+
+
+def _vendored_source_is_quiet(call: ast.Call, tree: ast.Module) -> bool:
+    if not _module_namespace(call):
+        return False
+    # 블록(try/if) 안의 대입도 — 실측 hpcp 의 _SRC_B85 는 최상단이 아니었다. 상수만 쓴다.
+    consts = {t.id: n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+              and isinstance(n.value, ast.Constant)
+              for t in n.targets if isinstance(t, ast.Name)}
+    raw = _static_decode(call.args[0], consts)
+    if raw is None:
+        return False
+    try:
+        source = raw.decode("utf-8")
+        ast.parse(source)
+    except (UnicodeDecodeError, SyntaxError, ValueError):
+        return False
+    from engine.static_analyzer import analyze_files  # 순환 import 방지 — 여기서만 쓴다
+
+    findings = analyze_files({"v-0/setup.py": "", "v-0/PKG-INFO": "Name: v",
+                              "v-0/vendored/__init__.py": source})
+    loud = {"custom-install-time-spawn", "custom-install-time-network-indirect"}
+    return not any(f.severity in (Severity.HIGH, Severity.CRITICAL) or f.rule in loud
+                   for f in findings)
+
+
 def obfuscated_payload(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding]:
     """Flag decoded/decompressed blobs flowing into an execution sink."""
     index = _DecoderIndex(tree)
@@ -302,7 +394,20 @@ def obfuscated_payload(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFin
         # Anything nested in the sink's arguments counts: exec(b64decode(x)),
         # exec(zlib.decompress(b64decode(x))), exec(f(b64decode(x))) ...
         matched = index.find(list(node.args))
-        if matched:
+        if matched and _vendored_source_is_quiet(node, tree):
+            yield make_finding(
+                rule=RULE_OBFUSCATED,
+                cwe="CWE-506",
+                severity=Severity.MEDIUM,
+                ctx=ctx,
+                line=node.lineno,
+                detail=(
+                    f"encoded source ({matched}) executed into another module's namespace "
+                    f"via {sink}() — decoded statically (not run): it is a library with no "
+                    "import-time network, process or nested decode-execute"
+                ),
+            )
+        elif matched:
             yield make_finding(
                 rule=RULE_OBFUSCATED,
                 cwe="CWE-506",

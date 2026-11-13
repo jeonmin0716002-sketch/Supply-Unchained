@@ -80,20 +80,29 @@ def _has_setup_py(archive_names: list[str]) -> bool:
 
 
 async def _collect_with_context(ctx: PackageContext, *, inspect_sdist: bool) -> PackageMetadata:
+    # 생태계 무관: PyPI JSON 이 아니라 공통 Project 모델(ecosystems.base)만 본다.
     try:
-        project = await ctx.project()
+        project = await ctx.model()
     except PyPIError as exc:
         return PackageMetadata(name=ctx.name, version=ctx.version, note=str(exc))
 
+    release = project.release(ctx.version)
+    # 의존성: 릴리스별 값이 있으면 그것. pip 은 프로젝트 JSON 이 최신 버전의 것만 주므로
+    # 어댑터가 latest_dependencies 로 넘긴 값을 쓴다 — 어댑터 도입 전과 같은 동작.
+    deps = list(release.dependencies) if release and release.dependencies else list(
+        project.extra.get("latest_dependencies") or []
+    )
     meta = PackageMetadata(
         name=ctx.name,
         version=ctx.version,
         found=True,
-        release_dates=_parse_release_dates(project.releases),
-        requires_dist=list(project.info.get("requires_dist") or []),
+        release_dates=sorted(
+            r.uploaded_at for r in project.releases.values() if r.uploaded_at is not None
+        ),
+        requires_dist=deps,
     )
 
-    if not project.has_version(ctx.version):
+    if release is None:
         # The project exists but this release does not. Metadata-derived signals
         # would describe some other version, so say so rather than implying the
         # requested one was checked.
@@ -102,11 +111,16 @@ async def _collect_with_context(ctx: PackageContext, *, inspect_sdist: bool) -> 
 
     if inspect_sdist:
         try:
-            meta.has_install_script = _has_setup_py(await ctx.archive_names())
+            names = await ctx.archive_names()
         except PyPIError as exc:
             # Do not let "we could not look" pass as "there is no install
             # script" -- that silently removes 20 points of risk.
             meta.note = f"artifact not inspected: {exc}"
+            names = None
+        if names is not None:
+            meta.has_install_script = ctx.eco.has_install_script(project, ctx.version, names)
+        elif release.install_script is not None:
+            meta.has_install_script = release.install_script
 
     return meta
 
@@ -118,6 +132,7 @@ async def collect(
     client: httpx.AsyncClient | None = None,
     ctx: PackageContext | None = None,
     inspect_sdist: bool = True,
+    ecosystem: str = "pip",
 ) -> PackageMetadata:
     """Fetch metadata for ``name==version`` from PyPI.
 
@@ -133,5 +148,5 @@ async def collect(
     if ctx is not None:
         return await _collect_with_context(ctx, inspect_sdist=inspect_sdist)
 
-    async with PackageContext(name, version, client=client) as own_ctx:
+    async with PackageContext(name, version, client=client, ecosystem=ecosystem) as own_ctx:
         return await _collect_with_context(own_ctx, inspect_sdist=inspect_sdist)

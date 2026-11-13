@@ -27,7 +27,9 @@ from datetime import datetime
 
 import httpx
 
-INDEX_URL = "https://osv-vulnerabilities.storage.googleapis.com/PyPI/modified_id.csv"
+#: OSV 버킷은 ecosystem 이름(``Ecosystem.osv_ecosystem``)별 경로다 — PyPI/, npm/, crates.io/ ...
+INDEX_URL_TMPL = "https://osv-vulnerabilities.storage.googleapis.com/{osv}/modified_id.csv"
+INDEX_URL = INDEX_URL_TMPL.format(osv="PyPI")
 VULN_URL = "https://api.osv.dev/v1/vulns/{id}"
 
 
@@ -46,8 +48,10 @@ def _parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(f"{head}.{(frac or '0')[:6]}+00:00")
 
 
-async def _recent_mal_ids(http: httpx.AsyncClient, since: datetime) -> list[str]:
-    resp = await http.get(INDEX_URL)
+async def _recent_mal_ids(
+    http: httpx.AsyncClient, since: datetime, osv: str = "PyPI"
+) -> list[str]:
+    resp = await http.get(INDEX_URL_TMPL.format(osv=osv))
     resp.raise_for_status()
     out = []
     for row in csv.reader(io.StringIO(resp.text)):
@@ -67,17 +71,21 @@ def _detected_at(vuln: dict) -> str:
     return min(times) if times else vuln.get("published", "")
 
 
-def _our_status(db: sqlite3.Connection, name: str) -> tuple[str, str]:
+def _our_status(
+    db: sqlite3.Connection, name: str, ecosystem: str = "pip"
+) -> tuple[str, str]:
     q = db.execute(
-        "SELECT verdict, status FROM watch_queue WHERE lower(name) = lower(?)", (name,)
+        "SELECT verdict, status FROM watch_queue WHERE lower(name) = lower(?)"
+        " AND ecosystem = ?", (name, ecosystem),
     ).fetchall()
     if any(v == "removed" for v, _ in q):
         return "removed", "스캔 전에 PyPI 에서 삭제된 것을 감지"
     if q:
         return "caught", f"감시 큐 등록 ({', '.join(sorted({s for _, s in q}))})"
     scans = db.execute(
-        "SELECT version, verdict, response_json FROM scans WHERE lower(name) = lower(?)",
-        (name,),
+        "SELECT version, verdict, response_json FROM scans WHERE lower(name) = lower(?)"
+        " AND ecosystem = ?",
+        (name, ecosystem),
     ).fetchall()
     if scans:
         rules = set()
@@ -88,10 +96,15 @@ def _our_status(db: sqlite3.Connection, name: str) -> tuple[str, str]:
     return "unseen", "감시기 기록 없음"
 
 
-async def crosscheck(db_path: str, since: datetime, concurrency: int = 8) -> list[Report]:
+async def crosscheck(
+    db_path: str, since: datetime, concurrency: int = 8, ecosystem: str = "pip",
+    osv_ecosystem: str = "PyPI",
+) -> list[Report]:
+    """``ecosystem`` 는 우리 DB 의 식별자(pip), ``osv_ecosystem`` 은 OSV 이름(PyPI).
+    PyPI 가 아니면 업로드 시각을 알 수 없어 최초 탐지 시각을 쓴다(PyPI JSON API 는 PyPI 전용)."""
     db = sqlite3.connect(db_path)
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as http:
-        ids = await _recent_mal_ids(http, since)
+        ids = await _recent_mal_ids(http, since, osv_ecosystem)
         sem = asyncio.Semaphore(concurrency)
 
         async def one(vuln_id: str) -> dict | None:
@@ -102,6 +115,8 @@ async def crosscheck(db_path: str, since: datetime, concurrency: int = 8) -> lis
         vulns = [v for v in await asyncio.gather(*(one(i) for i in ids)) if v]
 
         async def first_upload(name: str, versions: list[str]) -> str | None:
+            if osv_ecosystem != "PyPI":
+                return None
             async with sem:
                 resp = await http.get(f"https://pypi.org/pypi/{name}/json")
             if resp.status_code != 200:
@@ -113,7 +128,7 @@ async def crosscheck(db_path: str, since: datetime, concurrency: int = 8) -> lis
 
         candidates = []
         for v in vulns:
-            pypi = [a for a in v.get("affected", []) if a["package"]["ecosystem"] == "PyPI"]
+            pypi = [a for a in v.get("affected", []) if a["package"]["ecosystem"] == osv_ecosystem]
             if pypi:
                 candidates.append((v, pypi[0]["package"]["name"], pypi[0].get("versions") or []))
         uploads = await asyncio.gather(*(first_upload(n, vs) for _, n, vs in candidates))
@@ -123,7 +138,7 @@ async def crosscheck(db_path: str, since: datetime, concurrency: int = 8) -> lis
         when = uploaded or _detected_at(v)
         if not when or _parse_ts(when) < since:
             continue  # 감시 시작 전에 올라왔다 (또는 그 전에 이미 탐지됐다)
-        status, detail = _our_status(db, name)
+        status, detail = _our_status(db, name, ecosystem)
         basis = "업로드" if uploaded else "최초 탐지"
         reports.append(Report(v["id"], name, f"{when[:16]} ({basis})", status, detail))
     return sorted(reports, key=lambda r: r.detected_at)

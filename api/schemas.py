@@ -11,17 +11,26 @@ import re
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 
 # ──────────────────────────────
 # 공통 Enum
 # ──────────────────────────────
 
 class Ecosystem(str, Enum):
-    """확장 대비 필드. 현재는 pip만 지원."""
+    """패키지 생태계. 값은 ``ecosystems.KNOWN_IDS`` 와 같다 (tests/test_pipeline_multi.py 가 검사).
+
+    enum 에 있다고 스캔할 수 있는 것은 아니다 — 어댑터(``ecosystems/<id>/``)가 병합되지
+    않은 생태계는 ScanRequest 검증에서 422 로 거절된다(500 이 아니라).
+    """
     PIP = "pip"
-    # NPM = "npm"      # Future Work
-    # CARGO = "cargo"  # Future Work
+    NPM = "npm"
+    CARGO = "cargo"
+    GO = "go"
+    MAVEN = "maven"
+    RUBYGEMS = "rubygems"
+    NUGET = "nuget"
+    COMPOSER = "composer"
 
 
 class Verdict(str, Enum):
@@ -54,49 +63,54 @@ class VulnSource(str, Enum):
 # 시스템이 확장될수록(셸 스크립트 훅, 로그 파이프라인 등) 어떤 싱크가 생길지
 # 모르므로 입구에서 화이트리스트로 잘라내는 게 defense-in-depth 의 기본이다.
 #
+# 이름·버전 문법은 생태계마다 다르므로 검증은 어댑터(``Ecosystem.validate``)에 맡긴다.
+# pip 은 아래 정규식과 오류 문구를 그대로 쓴다(ecosystems/pip — 기존 테스트·CLI 출력 유지):
 # 이름: PEP 503 정규화 규칙 그대로 — 영숫자로 시작/끝, 중간에 . _ - 만 허용.
 # 버전: PEP 440 이 쓰는 문자만 — 영숫자 토큰을 . _ + ! - 로 연결한 형태.
 #       (예: 2.31.0 / 4.0.0rc1 / 1!2.0 / 1.0.0+cpu — 셸 메타문자·공백·따옴표는 전부 거부)
 _PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9]+(?:[._+!-][A-Za-z0-9]+)*$")
 
+#: Field 단계의 길이 상한은 "어느 생태계든 이보다 길 수 없다"는 바깥 울타리다. 생태계별
+#: 상한은 어댑터가 다시 건다. 214(npm 이름 상한)로 두면 Maven ``group:artifact`` 와 Go 모듈
+#: 경로(``github.com/org/repo/v2/sub``)가 정상인데도 잘린다.
+MAX_NAME_FIELD = 512
+MAX_VERSION_FIELD = 128
+
 
 class ScanRequest(BaseModel):
     ecosystem: Ecosystem = Field(
         default=Ecosystem.PIP,
-        description="패키지 에코시스템 (향후 npm 등 확장 대비)",
+        description="패키지 에코시스템 (pip·npm·cargo·go·maven·rubygems·nuget·composer)",
     )
     name: str = Field(
         min_length=1,
-        max_length=214,
-        description="패키지 이름",
+        max_length=MAX_NAME_FIELD,
+        description="패키지 이름 (npm @scope/name, Maven group:artifact, Go 모듈 경로 포함)",
         examples=["requests"],
     )
     version: str = Field(
         min_length=1,
-        max_length=64,
+        max_length=MAX_VERSION_FIELD,
         description="패키지 버전 (정확한 버전 문자열)",
         examples=["2.31.0"],
     )
 
-    @field_validator("name")
-    @classmethod
-    def _validate_name(cls, v: str) -> str:
-        if not _PACKAGE_NAME_RE.match(v):
-            raise ValueError(
-                "패키지명은 영숫자로 시작·끝나고 중간에 . _ - 만 쓸 수 있습니다 "
-                "(PEP 503 — Command Injection 방지)"
-            )
-        return v
+    @model_validator(mode="after")
+    def _validate_with_adapter(self) -> "ScanRequest":
+        # 지연 import: ecosystems.base 가 이 모듈(StaticFinding)을 import 하므로 위에서
+        # 부르면 순환 import 가 된다.
+        import ecosystems
 
-    @field_validator("version")
-    @classmethod
-    def _validate_version(cls, v: str) -> str:
-        if not _VERSION_RE.match(v):
+        try:
+            eco = ecosystems.get(self.ecosystem.value)
+        except ecosystems.UnknownEcosystem as exc:
+            # 알려진 생태계지만 어댑터가 아직 없다 — 500 이 아니라 422 로 사유를 돌려준다.
             raise ValueError(
-                "버전은 영숫자와 . _ + ! - 만 쓸 수 있습니다 (PEP 440 문자셋)"
-            )
-        return v
+                f"{self.ecosystem.value}: 아직 스캔을 지원하지 않습니다 ({exc})"
+            ) from exc
+        eco.validate(self.name, self.version)
+        return self
 
     model_config = {
         "json_schema_extra": {

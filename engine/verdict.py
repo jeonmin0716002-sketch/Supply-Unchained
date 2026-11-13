@@ -22,7 +22,14 @@ from dataclasses import dataclass
 
 from engine.rules.code_patterns import RULE_DANGEROUS_CALL, RULE_OBFUSCATED
 from engine.rules.install_hooks import RULE_INSTALL_HOOK, RULE_PTH
-from engine.rules.install_time import RULE_EXFIL, RULE_INSTALL_TIME
+from engine.rules.install_time import (
+    RULE_BENIGN_NET,
+    RULE_ENTRYPOINT,
+    RULE_EXFIL,
+    RULE_INDIRECT_NET,
+    RULE_INSTALL_SPAWN,
+    RULE_INSTALL_TIME,
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +62,30 @@ RULE_CATALOG: dict[str, RuleInfo] = {
         summary="network call or suspicious command run by install-/import-time code",
         cwes=frozenset({"CWE-506"}),
     ),
+    RULE_BENIGN_NET: RuleInfo(
+        rule_id=RULE_BENIGN_NET,
+        summary="install-/import-time network call to PyPI/localhost, or a download-only call "
+                "in setup.py with nothing in the install scope that could run the file",
+        cwes=frozenset({"CWE-506"}),
+    ),
+    RULE_INDIRECT_NET: RuleInfo(
+        rule_id=RULE_INDIRECT_NET,
+        summary="network call reached only through the extended import-time scope (other "
+                "modules, instances, threads, class bodies); HIGH via version_diff when new",
+        cwes=frozenset({"CWE-506"}),
+    ),
+    RULE_INSTALL_SPAWN: RuleInfo(
+        rule_id=RULE_INSTALL_SPAWN,
+        summary="process spawned by install-/import-time code (no known-suspicious token; "
+                "escalated to HIGH by engine.version_diff when new in this release)",
+        cwes=frozenset({"CWE-78"}),
+    ),
+    RULE_ENTRYPOINT: RuleInfo(
+        rule_id=RULE_ENTRYPOINT,
+        summary="suspicious command (hidden PowerShell, curl|sh ...) run by a console-script "
+                "entry point — context only (MEDIUM): 0 real-malware catches, new-upload FPs",
+        cwes=frozenset({"CWE-506"}),
+    ),
     RULE_EXFIL: RuleInfo(
         rule_id=RULE_EXFIL,
         summary="hardcoded Discord webhook / Telegram bot token — exfiltration channel",
@@ -66,6 +97,15 @@ RULE_CATALOG: dict[str, RuleInfo] = {
         cwes=frozenset({"CWE-506"}),
     ),
 }
+
+#: 직전 릴리스 대비 새 행위(engine/version_diff.py) — 원래 finding 의 CWE 를 그대로 쓴다.
+#: 순환 import 를 피하려고 규칙 ID 를 여기 직접 둔다 (version_diff 가 static_analyzer 를 쓴다).
+RULE_NEW_BEHAVIOR = "custom-new-behavior"
+RULE_CATALOG[RULE_NEW_BEHAVIOR] = RuleInfo(
+    rule_id=RULE_NEW_BEHAVIOR,
+    summary="install-/import-time behaviour absent from the previous release (account takeover)",
+    cwes=frozenset().union(*(info.cwes for info in RULE_CATALOG.values())),
+)
 
 #: Every CWE the engine's custom rules are allowed to produce.
 KNOWN_CWES: frozenset[str] = frozenset().union(*(info.cwes for info in RULE_CATALOG.values()))

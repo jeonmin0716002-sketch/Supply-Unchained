@@ -19,7 +19,7 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Iterable
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from api.schemas import Severity, StaticFinding
 from engine.rules.base import FileContext, make_finding
@@ -92,9 +92,21 @@ def _is_exec_sink(fn: ast.expr) -> bool:
     return False
 
 
+#: 받기만 하는 싱크 — 훅 안의 싱크가 이것뿐이면 "실행"이 아니다. 신규 업로드 실측 오탐
+#: haddock3 가 install 훅에서 데이터 파일을 재시도하며 내려받았다(docs/eval/watch-new-uploads.md
+#: §P4). install_time 의 "받기만 하는 다운로드" 기준(urlretrieve)과 같다.
+_DOWNLOAD_ONLY_SINKS = {"urlretrieve"}
+
+
+def _sink_name(fn: ast.expr) -> str:
+    return fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+
+
 def _calls_exec_sink(node: ast.AST) -> bool:
-    """서브트리 안에서 실행·네트워크 싱크 호출이 보이면 True."""
-    return any(isinstance(sub, ast.Call) and _is_exec_sink(sub.func) for sub in ast.walk(node))
+    """서브트리 안에서 실행·네트워크 싱크 호출이 보이면 True. 싱크가 다운로드뿐이면 False."""
+    names = {_sink_name(sub.func) for sub in ast.walk(node)
+             if isinstance(sub, ast.Call) and _is_exec_sink(sub.func)}
+    return bool(names - _DOWNLOAD_ONLY_SINKS)
 
 
 def _hook_class_defs(tree: ast.Module, value: ast.expr) -> ast.ClassDef | None:
@@ -138,6 +150,149 @@ def _installs_at_site_packages_root(relpath: str) -> bool:
     )
 
 
+#: .pth 시작 훅에서 흔한 표준 모듈과, 그걸로 하는 일 — 경로 추가뿐
+_PTH_STDLIB = {"sys", "os", "site", "importlib"}
+_PTH_STDLIB_CALLS = {"sys.path.insert", "sys.path.append", "site.addsitedir",
+                     "os.environ.setdefault"}
+_PTH_ARG_CALLS = {"os.path.join", "os.path.dirname", "os.path.abspath"}
+
+
+def _pth_parse(line: str) -> tuple[list[str], list[str], list[str]] | None:
+    """시작 훅으로 흔한 형태면 (import 한 모든 점 이름, 자기 모듈 최상위 이름, 부르는 자기 모듈
+    함수의 점 이름), 아니면 None.
+
+    실측(신규 업로드 재스캔): dagz ``import dagz.sensor.bootstrap; dagz.sensor.bootstrap.
+    bootstrap()``, doeff-hy ``import doeff_hy_bytecode_guard; doeff_hy_bytecode_guard.install()``,
+    nvidia-cutlass-dsl ``import sys, os, nvidia_cutlass_dsl; sys.path.insert(0, os.path.join(
+    nvidia_cutlass_dsl.__path__[0], 'dsl_packages'))``. 그 밖의 문장(exec·__import__·
+    다른 모듈 호출·대입)이 하나라도 있으면 None — HIGH 그대로.
+    """
+    try:
+        tree = ast.parse(line)
+    except (SyntaxError, ValueError):
+        return None
+    imported: list[str] = []
+    own: list[str] = []
+    calls: list[str] = []
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for a in stmt.names:
+                if a.asname:
+                    return None
+                imported.append(a.name)
+                top = a.name.split(".")[0]
+                if top not in _PTH_STDLIB:
+                    own.append(top)
+            continue
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+            return None
+        call = stmt.value
+        name = _dotted(call.func) or ""
+        root = name.split(".")[0]
+        if root in _PTH_STDLIB:
+            if name not in _PTH_STDLIB_CALLS:
+                return None
+        elif root in own:
+            calls.append(name)
+        else:
+            return None
+        for arg in [*call.args, *(k.value for k in call.keywords)]:
+            for sub in ast.walk(arg):
+                if isinstance(sub, ast.Call) and (_dotted(sub.func) or "") not in _PTH_ARG_CALLS:
+                    return None
+    return (imported, own, calls) if own else None
+
+
+def pth_own_imports(line: str) -> list[str] | None:
+    """시작 훅 형태(_pth_parse)면 자기 모듈 최상위 이름들, 아니면 None."""
+    parsed = _pth_parse(line)
+    return parsed[1] if parsed else None
+
+
+def own_module_files(ctx: FileContext, top: str) -> list[str]:
+    """같은 배포물 안에서 최상위 모듈 ``top`` 이 될 파일 (``top.py`` / ``top/__init__.py``)."""
+    if ctx.tree is None:
+        return []
+    # __init__.py 없는 namespace 패키지도 자기 모듈이다 (실측: dagz 휠의 dagz/)
+    return [f for f in ctx.tree.files()
+            if PurePosixPath(f).name == f"{top}.py"
+            or (PurePosixPath(f).suffix == ".py" and top in PurePosixPath(f).parts[:-1])]
+
+
+def _pth_targets_flagged(ctx: FileContext, line: str) -> bool:
+    """.pth 가 import 하는 자기 모듈(점 경로의 각 단계)에 HIGH finding 이 있거나, .pth 가
+    부르는 자기 모듈 함수가 (따라가 보면) 네트워크·프로세스 실행·실행 싱크·디코딩에 닿는가.
+
+    그렇다면 .pth 는 "문제 있는 코드를 모든 파이썬 프로세스에서 띄우는 지속성 장치"라 HIGH 로
+    남긴다 (samples/sample5_mcp_typosquat: .pth → 자기 모듈 _telemetry 의 디코딩→exec).
+    """
+    from engine.rules import AST_RULES  # 순환 import 방지
+    from engine.rules.exec_scope import ModuleIndex, Scope, body_nodes
+
+    parsed = _pth_parse(line)
+    if parsed is None or ctx.tree is None:
+        return True
+    imported, own, calls = parsed
+    files = set()
+    for dotted in imported:
+        parts = tuple(dotted.split("."))
+        if parts[0] not in own:
+            continue
+        for i in range(1, len(parts) + 1):
+            want = parts[:i]
+            for f in ctx.tree.files():
+                fp = PurePosixPath(f)
+                mod = fp.parent.parts if fp.name == "__init__.py" else fp.with_suffix("").parts
+                if fp.suffix == ".py" and mod[-len(want):] == want:
+                    files.add(f)
+    for f in sorted(files):
+        text = ctx.tree.read(f)
+        if text is None:
+            return True  # 못 읽었다 = 못 봤다
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            continue
+        sub = FileContext(path=Path(f), relpath=f, text=text, tree=ctx.tree)
+        for rule in AST_RULES:
+            if any(x.severity in (Severity.HIGH, Severity.CRITICAL) for x in rule(sub, tree)):
+                return True
+    # 부르는 자기 모듈 함수 — 본문을 따라가 본다
+    index = ModuleIndex.of(ctx.tree)
+    for call in calls:
+        mod_part, _, func = call.rpartition(".")
+        target_files = [f for f in files
+                        if (PurePosixPath(f).parent.parts if PurePosixPath(f).name == "__init__.py"
+                            else PurePosixPath(f).with_suffix("").parts)[-len(mod_part.split(".")):]
+                        == tuple(mod_part.split("."))]
+        if not target_files:  # namespace 패키지면 모듈 파일로 찾는다
+            target_files = [f for f in ctx.tree.files() if PurePosixPath(f).with_suffix("")
+                            .parts[-len(mod_part.split(".")):] == tuple(mod_part.split("."))]
+        if not target_files:
+            return True  # 어디 있는지 모르면 못 본 것이다
+        mod = index.module(target_files[0])
+        scope = Scope(index)
+        # 재수출(__init__.py 의 ``from .loader_hooks import install``)까지 푼다 — 실측 doeff-hy
+        found = scope._lookup_in(mod, [func], 0) if mod is not None else None
+        if found is None or not isinstance(found[1], (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return True
+        for r in scope.run(found[0], body_nodes(found[1])):
+            if isinstance(r.node, ast.Call) and _risky_call(r.node, r.module.aliases):
+                return True
+    return False
+
+
+def _risky_call(call: ast.Call, aliases: dict[str, str]) -> bool:
+    from engine.rules.base import resolve_name
+    from engine.rules.code_patterns import _DECODERS
+    from engine.rules.install_time import _is_network_call, _is_spawn
+
+    name = resolve_name(call.func, aliases) or ""
+    return (_is_network_call(call, aliases) or _is_spawn(call, aliases)
+            or name in {"exec", "eval", "compile", "__import__", "builtins.exec", "builtins.eval"}
+            or name in _DECODERS or name.startswith("ctypes."))
+
+
 def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
     """Flag ``.pth`` lines that ``site.py`` will execute at every startup.
 
@@ -162,7 +317,22 @@ def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
         if not line.startswith(("import ", "import\t")):
             continue
 
-        if reachable:
+        own = pth_own_imports(line)
+        if (reachable and own and all(own_module_files(ctx, m) for m in own)
+                and not _pth_targets_flagged(ctx, line)):
+            # 신규 업로드 실측 오탐(docs/eval/watch-new-uploads.md §P2): dagz·doeff-hy·
+            # quantark·nvidia-cutlass-dsl·triton-utlx-rocm 의 .pth 가 모두 같은 배포물의 자기
+            # 모듈을 import 하는 한 줄이었다 — 의도된 시작 훅이다. 그 모듈의 import 시점 코드는
+            # custom-install-time-exec 가 본다(.pth 가 import 하는 모듈은 위치와 무관하게
+            # 패키지 모듈로 취급 — install_time._is_package_module). 그 모듈에 HIGH 가 있으면
+            # .pth 도 HIGH 다 (_pth_targets_flagged).
+            severity = Severity.MEDIUM
+            detail = (
+                "'.pth' runs at every interpreter startup but only imports this "
+                f"distribution's own module(s) {own} — their import-time code is analysed "
+                f"by custom-install-time-exec: {line[:120]}"
+            )
+        elif reachable:
             severity = Severity.HIGH
             detail = (
                 "'.pth' file executes code at interpreter startup "
