@@ -7,7 +7,7 @@
 
 | 지표 | 데이터 | 결과 |
 |---|---|---|
-| 탐지율 — **held-out (실제 값)** | DataDog `malicious-software-packages-dataset` `samples/npm/malicious_intent` 중 튜닝 세트 300개 패키지를 **뺀** 무작위 300개 (패키지당 1버전, seed 7) | **52.0%** (156/300, 95% CI 46.4–57.6%) |
+| 탐지율 — **held-out (실제 값)** | DataDog `malicious-software-packages-dataset` `samples/npm/malicious_intent` 중 튜닝 세트 300개 패키지를 **뺀** 무작위 300개 (패키지당 1버전, seed 7) | **52.7%** (158/300, 95% CI 47.0–58.2%) — 탈취 세트 보강 전 52.0% (156/300) |
 | 탐지율 — 튜닝 세트 (참고용) | 같은 데이터셋 무작위 300개 (seed 42). 놓친 샘플을 보고 규칙을 고친 세트 | 52.7% (158/300, CI 47.0–58.2%) — 첫 규칙 45.3% |
 | 오탐률 (차단) | npm 다운로드 상위 300개 최신 버전 (`wooorm/npm-high-impact`, popular-lists 세션의 `npm.txt`) | **0/300** (95% CI 0–1.3%) |
 | 경고(MEDIUM) | 같은 300개 | 1개 — esbuild `install.js` 의 설치 시점 네트워크 호출 (바이너리 내려받기, 의도된 정황) |
@@ -35,6 +35,45 @@ held-out 에서 놓친 144개를 휴리스틱으로 나누면(스크래치 스�
 스팸·자리표시 계열(held-out 74개, 튜닝 세트 81개)을 빼면 held-out 156/226 = **69%**, 튜닝
 158/219 = 72% 다. 이 계열은 정적분석 규칙이 아니라 메타데이터(새 계정·연속 배포 — scoring)로
 보는 것이 맞고, 설계 §2.3 의 "HIGH 는 자동 실행 + 해로운 행위" 원칙상 HIGH 로 올리지 않았다.
+
+## 탈취된 정상 패키지 (`compromised_lib`) — 2026-11-14
+
+같은 데이터셋의 `samples/npm/compromised_lib` 전체 1,448 버전(패키지 1,004개). 12개는 읽지 못했다
+(크기 한도 초과 등) → 분석 1,436개.
+
+| 지표 | 결과 |
+|---|---|
+| 차단율 — **처음 본 값** (규칙을 고치기 전) | **68.1%** (978/1436, 95% CI 65.6–70.5%) |
+| 차단율 — 놓친 샘플을 보고 고친 뒤 (참고용, 이 세트가 튜닝 세트가 됐다) | 79.5% (1141/1436, CI 77.3–81.5%) |
+| 고친 뒤 held-out `malicious_intent` 300 | 52.7% (158/300) — 이전 52.0% |
+| 고친 뒤 npm 상위 300개 오탐 | 0/300 (경고 1개, esbuild — 이전과 같음) |
+
+발견 연도별 차단(전 → 후): 2024 4/11 → 4/11 · 2025 829/901 → 829/901 · 2026 145/524 → 308/524.
+2025 는 Shai-Hulud 두 차례(2025-09 368/406, 2025-11 441/441)가 대부분이다.
+
+```bash
+uv run python tools/eval_npm.py malware --kind compromised_lib --all-versions --out npm-compromised.json
+```
+
+### 놓친 샘플에서 찾아 고친 것
+
+| 캠페인 | 왜 놓쳤나 | 고친 것 |
+|---|---|---|
+| 2026-05 `@antv/*` | `"preinstall": "bun run index.js"` 에서 `run` 을 파일 이름으로 읽어 설치 시점 파일을 따라가지 못했다 (난독화가 MEDIUM 에 그침) | `bun run <파일>` 해석 |
+| 2026-03 `@emilgroup/*`, 2026-04 `@openwebconcept/*` | postinstall JS 가 base64 로 든 파이썬·node 스크립트를 디스크에 쓰고 실행 — JS 쪽에 네트워크 호출이 없다 | 설치 시점 파일의 긴 base64 문자열을 풀어 스크립트 표지(`#!`, `import subprocess`, `require('child_process'` …)가 있으면 `npm-decode-exec` HIGH |
+| 2026-05 `@tanstack/*` | 2.3 MB 난독화 파일 `router_init.js` 가 렉서 한도(1.5 MB)를 넘어 아예 보지 않았다. 실행은 `optionalDependencies` 의 `github:<org>/<repo>#<commit>` 쪽 prepare 스크립트가 한다 | 큰 JS 는 앞 300 KB 의 `_0x` 식별자를 센다. 어디서도 부르지 않는 난독화 파일 + 레지스트리 밖 의존성이면 `npm-obfuscated` HIGH (각각 혼자서는 MEDIUM·LOW 그대로) |
+
+### 고친 뒤에도 놓치는 것 (295개)
+
+* **끼워 넣은 악성 의존성** — 2026-06 `@mastra/*` 등(약 160개): 패키지 코드는 그대로이고
+  `dependencies` 에 악성 패키지(`easy-day-js`) 한 줄만 추가됐다. 이 패키지의 파일만 봐서는 알 수 없다
+  — 그 의존성 자체를 스캔해야 잡힌다(프록시는 전이 의존성도 하나씩 스캔하므로 그쪽에서 걸린다).
+  직전 버전과 의존성 목록을 비교하는 규칙이 있으면 정황을 줄 수 있다(미구현).
+* **진입점에 덧붙인 난독화 코드** — 2025-09 `error-ex`·`@coveops/*` 계열: 로드 시점 난독화는
+  MEDIUM(warn) 이다. 정상 패키지에도 난독화된 배포물이 있어 HIGH 로 올리지 않았다. npm 에는
+  직전 릴리스 대비 비교(`engine.version_diff`)가 아직 없다 — 있으면 "새로 생긴 난독화"로 올릴 수 있다.
+* **install 스크립트 없이 든 큰 번들** — `bundle.js` 3.7 MB 만 있고 실행 경로가 없는 변종(2025-09 일부).
+* 2025-06 `@react-native-aria/*`·`@gluestack-ui/*` (0/19) — 원인 미분석.
 
 ## 규칙 (`ecosystems/npm/rules.py`, ID → CWE 는 `RULE_CWES`)
 
@@ -87,8 +126,6 @@ node-pre-gyp 계열이 정상적으로 바이너리를 받는다). `os.platform(
 * **스팸·자리표시** — 위 표. 메타데이터 스코어링 몫.
 * 렉서 수준 분석이라 변수 섀도잉·동적 속성 이름(`obj[a+b]()`)·`eval` 로 만든 함수는 따라가지
   못한다. 계산된 속성 호출은 "os 를 쓰는 파일에 `'hostname'` 문자열이 있다" 같은 근사로만 본다.
-* `compromised_lib`(탈취된 정상 패키지, 1448 버전) 는 **측정하지 않았다** — 버전 대부분이 수 MB
-  번들이고 시간이 모자랐다. `--kind compromised_lib --n 60` 으로 잴 수 있다.
 * 프록시는 run_scan 을 바꿔 끼운 오프라인 테스트로만 검증했다 — 실제 `npm install --registry` 로는
   core-pipeline 병합 전이라 돌려 보지 않았다.
 * 피드(`replicate.npmjs.com/_changes?descending=true`)는 2026-11-13 인증 없이 동작했지만 버전을

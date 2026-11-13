@@ -48,7 +48,7 @@
 | 생태계 | 레지스트리 | 규칙이 보는 자동 실행 경로 | 실측 |
 |---|---|---|---|
 | pip | PyPI | `setup.py`, `.pth`, import 시 모듈 최상단, 직전 릴리스 대비 새 행위 | 탐지율·오탐률 (아래) |
-| npm | npm | `preinstall`·`install`·`postinstall`, `binding.gyp`, 진입점 최상단 | 탐지율 52.0% · 오탐 0/300 ([docs/eval/npm.md](docs/eval/npm.md)) |
+| npm | npm | `preinstall`·`install`·`postinstall`, `binding.gyp`, 진입점 최상단 | 탐지율 52.7% · 탈취 패키지 차단 68.1% · 오탐 0/300 ([docs/eval/npm.md](docs/eval/npm.md)) |
 | cargo | crates.io | `build.rs`, proc-macro | 인기 60개 오탐 0 (탐지율 미측정) |
 | go | Go module proxy | `init()`, 패키지 변수 초기화, cgo 지시문 | 인기 패키지 소수만 확인 (탐지율 미측정) |
 | maven | Maven Central | 매니페스트의 Java agent, annotation processor, POM 빌드 플러그인, `.class` 상수 풀 | 인기 패키지 소수만 확인 (탐지율 미측정) |
@@ -348,7 +348,8 @@ uv run python -m cli.su_scan check-file requirements.txt   # block 있으면 exi
 | 탐지율 — 탈취된 정상 패키지 | 같은 데이터셋 `compromised_lib` 전체 (17개 패키지, 29개 버전 — ultralytics·litellm·mistralai·telnyx 등 실제 사고). 직전 정상 릴리스와 비교 | **93.1%** 차단 (27/29, CI 78.0–98.1%) · 끼워 넣은 코드로 잡은 것 **85.7%** (24/28). 이전 엔진은 62% (18/29) |
 | 오탐률 (차단) — 인기 패키지 | PyPI 다운로드 상위 300개 최신 버전 ([top-pypi-packages](https://hugovk.github.io/top-pypi-packages/)) | **0.7%** (2/299 — urllib3·coverage). 직전 릴리스 비교로 새로 차단된 것 0/299 |
 | 오탐률 (차단) — 신규 업로드 | 감시기가 실제로 본 PyPI 릴리스 16,181개 중 무작위 500개 (seed 20261113) | **0.20%** (1/491, CI 0.04–1.14%) |
-| npm 탐지율 · 오탐률 | DataDog 같은 데이터셋 `samples/npm` 중 처음 보는 300개 · npm 상위 300개 | **52.0%** (156/300, CI 46.4–57.6%) · 오탐 **0/300** — [docs/eval/npm.md](docs/eval/npm.md) |
+| npm 탐지율 · 오탐률 | DataDog 같은 데이터셋 `samples/npm` 중 처음 보는 300개 · npm 상위 300개 | **52.7%** (158/300, CI 47.0–58.2%) · 오탐 **0/300** — [docs/eval/npm.md](docs/eval/npm.md) |
+| npm 탈취 패키지 차단 | 같은 데이터셋 `samples/npm/compromised_lib` 전체 1,436 버전 | 처음 본 값 **68.1%** (978/1436, CI 65.6–70.5%) · 놓친 샘플을 보고 고친 뒤 79.5% (참고용) |
 
 위 표는 2026-11 재측정 값이다. 근거와 규칙별 내역은 [docs/eval/py-engine.md](docs/eval/py-engine.md),
 [docs/eval/watch-new-uploads.md](docs/eval/watch-new-uploads.md). 아래 본문의 경과 설명에 나오는 수치(80.7% 등)는

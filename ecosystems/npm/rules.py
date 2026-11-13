@@ -24,6 +24,8 @@ HIGH 는 그 범위 안의 공급망 공격 특유 조합에만 낸다 (docs/des
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import json
 import re
@@ -179,6 +181,8 @@ _PRIVATE_IP = re.compile(r"^(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.
 _B64_LONG = re.compile(r"^[A-Za-z0-9+/]{200,}={0,2}$")
 _HEX_LONG = re.compile(r"^(?:[0-9a-fA-F]{2}){150,}$")
 _OBF_ID = re.compile(r"^_0x[0-9a-f]{4,}$")
+_OBF_ID_ANY = re.compile(r"\b_0x[0-9a-f]{4,}\b")
+_BIG_HEAD = 300_000
 
 #: 정상 install 스크립트로 흔한 명령 (상위 패키지 실측) — 출처를 남겨 분류만 한다
 _KNOWN_BUILDERS = re.compile(
@@ -598,10 +602,46 @@ def _judge(facts: _FileFacts, rel: str, scope: str, when: str) -> list[StaticFin
     return out
 
 
+_B64_LITERAL = re.compile(r"^[A-Za-z0-9+/\s]{200,}={0,2}$")
+#: 디코딩한 내용이 다른 언어의 스크립트임을 보여주는 표지
+_PAYLOAD_MARKS = re.compile(
+    r"^#!\s*/|\bimport\s+(?:os|subprocess|socket|urllib|requests|base64)\b"
+    r"|\brequire\(\s*['\"]child_process|\b(?:curl|wget)\s+\S|/bin/(?:ba)?sh\b"
+    r"|\bpowershell\b|\bInvoke-(?:WebRequest|Expression)\b|\bsubprocess\.\w+\(|\bos\.system\(",
+    re.M | re.I,
+)
+
+
+def _embedded_payload(mod: jslex.Module) -> str | None:
+    """base64 문자열 리터럴을 풀면 스크립트(파이썬·셸·node)가 나오는가.
+
+    실측: 2026-03 @emilgroup 탈취 캠페인 — postinstall 의 ``index.js`` 가 base64 로 박아 둔
+    파이썬 백도어를 디스크에 쓰고 서비스로 등록한다. 네트워크 호출이 JS 쪽에 없어 기존 규칙이
+    보지 못했다. 설치 스크립트가 다른 언어의 스크립트를 인코딩해 들고 있을 정상적인 이유는 없다.
+    """
+    for t in mod.tokens:
+        if t.kind not in ("str", "tpl") or len(t.value) < 200 or not _B64_LITERAL.match(t.value):
+            continue
+        try:
+            raw = base64.b64decode("".join(t.value.split()), validate=False)
+        except (binascii.Error, ValueError):
+            continue
+        text = raw[:20_000].decode("utf-8", "replace")
+        if not text or sum(ch.isprintable() or ch in "\r\n\t" for ch in text) < 0.95 * len(text):
+            continue
+        if m := _PAYLOAD_MARKS.search(text):
+            mark = m.group(0).strip()[:40]
+            return f"base64 문자열({len(t.value)}자)을 풀면 스크립트가 나옴 — '{mark}'"
+    return None
+
+
 def _analyze_js(text: str, rel: str, scope: str, when: str, *, whole: bool,
                 entry: bool = False) -> tuple[list[StaticFinding], jslex.Module]:
     mod = jslex.parse(text)
     out = _judge(_collect(mod, whole), rel, scope, when)
+    if scope == "install" and (payload := _embedded_payload(mod)) is not None:
+        out.append(_finding(RULE_DECODE_EXEC, Severity.HIGH, f"{rel}:1",
+                            f"{when} 코드에 숨긴 페이로드: {payload}"))
     if (obf := _obfuscation(mod, install=scope == "install")) is not None:
         sev = Severity.HIGH if scope == "install" else Severity.MEDIUM
         out.append(_finding(RULE_OBFUSCATED, sev, f"{rel}:1", f"{when} 난독화: {obf}"))
@@ -639,7 +679,8 @@ def _node_target(words: list[str]) -> tuple[str | None, str | None]:
     """``node [opts] file.js`` → (file, None), ``node -e "code"`` → (None, code)."""
     if not words or PurePosixPath(words[0]).name not in _NODE_RUNNERS:
         return None, None
-    if words[0] == "deno" and len(words) > 1 and words[1] == "run":
+    # ``bun run index.js`` · ``deno run x.ts`` — 실측: 2026-05 AntV 탈취 캠페인의 preinstall
+    if PurePosixPath(words[0]).name in ("deno", "bun") and len(words) > 1 and words[1] == "run":
         words = words[1:]
     k = 1
     while k < len(words):
@@ -842,6 +883,7 @@ def analyze_tree(tree: SourceTree, *, unreadable: list[str] | None = None
         out.extend(found)
 
     analyzed: set[str] = set()
+    hidden_obf: list[str] = []
     # 2) 설치 시점 파일 — 파일 전체 + 상대 require 를 따라간다
     queue = list(targets)
     while queue and len(analyzed) < _MAX_FOLLOW:
@@ -906,6 +948,16 @@ def analyze_tree(tree: SourceTree, *, unreadable: list[str] | None = None
         if not (is_js or low.endswith((".json", ".ts", ".sh", ".py"))):
             continue
         if tree.size(rel) > _MAX_FILE:
+            # 렉서 한도를 넘는 JS 는 앞부분의 ``_0x`` 식별자만 센다 — 실측: 2026-05 TanStack
+            # 캠페인의 2.3 MB ``router_init.js`` 는 어느 범위에도 안 걸려 아예 보지 않았다
+            if is_js and rel not in analyzed and rel not in loaded:
+                head = (tree.read(rel) or "")[:_BIG_HEAD]
+                n_obf = len(_OBF_ID_ANY.findall(head))
+                if n_obf >= 500:
+                    out.append(_finding(RULE_OBFUSCATED, Severity.MEDIUM, f"{rel}:1",
+                                        f"패키지 안 코드에서 난독화: 큰 파일 앞부분에 _0x 식별자 "
+                                        f"{n_obf}개"))
+                    hidden_obf.append(rel)
             continue
         text = tree.read(rel)
         if text is None:
@@ -919,6 +971,22 @@ def analyze_tree(tree: SourceTree, *, unreadable: list[str] | None = None
             found, _ = _analyze_js(text, rel, "other", "패키지 안 코드에서", whole=False)
             out.extend(f for f in found if f.rule in (RULE_DECODE_EXEC, RULE_OBFUSCATED,
                                                       RULE_SUSPICIOUS_HOST))
+            if any(f.rule == RULE_OBFUSCATED for f in found):
+                hidden_obf.append(rel)
+
+    # 4-1) 어디서도 불리지 않는 난독화 파일 + git 의존성 — git 의존성은 설치 때 그 저장소의
+    #      prepare 스크립트를 돌리고, 그 스크립트가 이 파일을 실행한다. 스캐너는 git 쪽 코드를
+    #      볼 수 없으므로 "실행 경로를 모른다"가 아니라 "실행 경로가 가려져 있다"로 본다.
+    #      (실측: 2026-05 TanStack·AntV — optionalDependencies 의 ``github:<org>/<repo>#<commit>``)
+    git_deps = [f for f in out if f.rule == RULE_REMOTE_DEP]
+    if git_deps:
+        for rel in hidden_obf:
+            if _is_bundle_path(rel):
+                continue
+            out.append(_finding(RULE_OBFUSCATED, Severity.HIGH, f"{rel}:1",
+                                "패키지 어디서도 부르지 않는 난독화 파일 + 레지스트리 밖 의존성 — "
+                                "그 의존성의 설치 스크립트가 이 파일을 실행하는 형태: "
+                                + (git_deps[0].detail or "")[:160]))
 
     # 5) binding.gyp, 포장 이상
     gyp = _join(root, "binding.gyp")
