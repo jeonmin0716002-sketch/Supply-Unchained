@@ -100,7 +100,9 @@ def write_list(eco: str, source: str, names: list[str]) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--only", choices=sorted(FETCHERS), help="build a single ecosystem")
     args = parser.parse_args(argv)
 

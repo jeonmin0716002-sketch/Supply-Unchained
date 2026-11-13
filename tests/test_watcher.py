@@ -500,7 +500,9 @@ async def test_ecosystem_without_feed_or_adapter_is_reported_not_crashing(store)
     nofeed.has_feed = False
     report = await run_cycle(
         http=None, store=store, scan=fake.scan, fetch=fake.fetch, resolve=fake.resolve,
-        ecosystems=("pip", "go", "nuget"), adapters={"go": nofeed},
+        # 통합 후에는 nuget 어댑터가 실제로 있어서(피드도 있다) "어댑터 없음" 경로를 타지 않는다 —
+        # 화이트리스트에 없는 식별자로 그 경로를 확인한다.
+        ecosystems=("pip", "go", "no-such-eco"), adapters={"go": nofeed},
     )
     assert len(report.feed_errors) == 2
 
