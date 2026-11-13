@@ -46,7 +46,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Supply-Unchained API",
     version="0.2.0",
-    description="pip 공급망 보안 스캐너 — CVE/OSV + 정적분석 + 위험도 스코어링 통합",
+    description=(
+        "오픈소스 공급망 보안 스캐너 (pip · npm · cargo · go · maven · rubygems · nuget · "
+        "composer) — CVE/OSV + 정적분석 + 위험도 스코어링 통합"
+    ),
     lifespan=lifespan,
 )
 
@@ -152,6 +155,15 @@ app.add_exception_handler(
 app.include_router(scan.router)
 app.include_router(proxy.router)
 app.include_router(watch.router)
+
+# guarded 연결 지점 (docs/design/multi-ecosystem.md §3.1) — npm 레지스트리 프록시는 eco-npm
+# 세션 소유라 병합 전에는 없다. 있으면 /npm 아래에 붙는다.
+try:
+    from api.routers import npm_proxy
+except ImportError:
+    npm_proxy = None
+if npm_proxy is not None:
+    app.include_router(npm_proxy.router)
 
 
 @app.get("/health", tags=["meta"])
