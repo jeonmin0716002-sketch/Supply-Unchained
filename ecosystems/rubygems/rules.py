@@ -97,6 +97,15 @@ _DECODER = re.compile(
     r"|Zlib(?:::Inflate|\s*\.\s*inflate|::GzipReader)|\.unpack1?\(\s*[\"']H\*[\"']\s*\)"
     r"|\.pack\(\s*[\"']H\*[\"']\s*\)|N-ZA-Mn-za-m|\.hex\b.*\.chr"
 )
+_DATA_FILE_LOAD = re.compile(r"Marshal|YAML")
+_FILE_READ = re.compile(r"GzipReader\s*\.\s*open|File\s*\.\s*(?:bin)?read|IO\s*\.\s*(?:bin)?read")
+_EMBEDDED_DECODER = re.compile(r"Base64|unpack1?\(|\.pack\(|N-ZA-Mn-za-m|\.hex\b")
+
+
+def _reads_bundled_file(text: str) -> bool:
+    return bool(_FILE_READ.search(text)) and not _EMBEDDED_DECODER.search(text)
+
+
 _ASSIGN = re.compile(r"^\s*(@{0,2}\w+)\s*=(?![=~>])", re.MULTILINE)
 
 _CREDENTIALS = re.compile(
@@ -210,6 +219,11 @@ def _scan_exec_scope(a: _Analysis, scope: str) -> list[tuple[str, int, str]]:
     for m in _EVAL.finditer(scope):
         end = statement_end(a.lx.masked, m.start())
         text = a.lx.nocomment[m.start():end]
+        if _DATA_FILE_LOAD.search(m.group(0)) and _reads_bundled_file(text):
+            # 압축된 **자기 데이터 파일**을 풀어 Marshal.load 하는 것은 캐시·표 로딩 관용구다
+            # (실측 오탐: unicode-display_width 3.3.0 — 상위 80개 gem 중 유일한 HIGH). 코드에 박은
+            # Base64·hex 덩어리를 푸는 것과 다르다. eval 계열은 파일에서 읽었어도 그대로 잡는다.
+            continue
         if _DECODER.search(text) or any(re.search(rf"(?<![\w@]){re.escape(v)}\b", text)
                                         for v in decoded):
             add("decode", m.start(), f"디코딩 결과를 실행/역직렬화 `{m.group(0).strip()}`")

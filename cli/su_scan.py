@@ -473,6 +473,10 @@ def watch(
     with_bandit: bool = typer.Option(
         False, "--with-bandit", help="Bandit 레이어도 돌린다 (느림 — 큐 기준에는 기여하지 않음)"
     ),
+    ecosystems: str = typer.Option(
+        "pip", "--ecosystems",
+        help="감시할 생태계 (쉼표로 구분, 예: pip,npm,cargo). 최대 스캔 수는 생태계마다 따로 센다",
+    ),
 ) -> None:
     """PyPI 신규 패키지·릴리스를 감시해 의심 패키지를 검토 큐에 쌓는다.
 
@@ -489,6 +493,7 @@ def watch(
     # (예: 집합 안의 집합 리터럴에서 unhashable type) 로, bandit 이 잡아서 그 호출 하나만
     # 건너뛰고 계속 돈다. 판정에 영향이 없는 traceback 수십 줄이 요약을 덮을 뿐이다.
     logging.getLogger("bandit").setLevel(logging.CRITICAL)
+    watched = [e.strip() for e in ecosystems.split(",") if e.strip()]
     # 스캔 대상 패키지 소스를 파싱할 때 Python 이 내는 SyntaxWarning(예: "invalid escape
     # sequence '\ '") 도 같은 소음이다 — 남의 코드 품질 경고라 판정과 무관하다.
     warnings.filterwarnings("ignore", category=SyntaxWarning)
@@ -507,6 +512,7 @@ def watch(
                 report = await run_cycle(
                     http=http, store=store, scan=partial(run_scan, bandit=with_bandit),
                     max_scans=max_scans, concurrency=concurrency, missing=missing,
+                    ecosystems=watched,
                 )
                 _render_cycle(report)
                 if once:
@@ -528,6 +534,11 @@ def _render_cycle(report) -> None:
         + (f" · [magenta]삭제 {len(report.removed)}[/magenta]" if report.removed else "")
         + (f" · [dim]조회 안 됨 {report.missing} (30분 뒤 재확인)[/dim]" if report.missing else "")
     )
+    if len(report.by_ecosystem) > 1:
+        console.print("  [dim]" + " · ".join(
+            f"{eco} 스캔 {c.get('scanned', 0)}/의심 {c.get('flagged', 0)}"
+            for eco, c in report.by_ecosystem.items()
+        ) + "[/dim]")
     for err in report.feed_errors:
         console.print(f"  [yellow]피드 조회 실패[/yellow] {escape(err)}")
     for name in report.removed:
@@ -549,7 +560,8 @@ def _render_cycle(report) -> None:
             # block 이 아닌데 큐에 왔다면 이름 유사도 때문이다 — 판정 사유만 보면 이유를 모른다
             typo = (r.get("risk_signals") or {}).get("typosquat_score")
             reasons = f"인기 패키지와 이름 유사도 {typo} · {reasons}"
-        pkg = escape(f"{r['name']}=={r['version']}")
+        eco = r.get("ecosystem") or "pip"
+        pkg = escape(("" if eco == "pip" else f"{eco}:") + f"{r['name']}=={r['version']}")
         console.print(
             f"  [{color}]{r['verdict'].upper()}[/{color}] {pkg} "
             f"(위험도 {r['risk_score']}) — {escape(reasons)}"
@@ -561,6 +573,7 @@ def crosscheck(
     since: str = typer.Option(
         None, help="이 시각(UTC, 예: 2026-10-17T08:00) 이후 탐지된 것만. 비우면 감시 시작 시각"
     ),
+    ecosystem: str = typer.Option("pip", "--ecosystem", "-e", help="대조할 생태계"),
 ) -> None:
     """OpenSSF 악성 패키지 DB 와 감시 결과를 맞춰 실제 운영 탐지율을 본다.
 
@@ -577,9 +590,18 @@ def crosscheck(
     if start is None:
         console.print("[red]감시 기록이 없습니다.[/red] 먼저 watch 를 돌리세요.")
         raise typer.Exit(code=2)
-    reports = _run_local(run_crosscheck(db_path(), start))
+    import ecosystems as eco_registry
 
-    t = Table(title=f"OpenSSF 신고 PyPI 악성 (감시 시작 {start:%m-%d %H:%M} UTC 이후)",
+    try:
+        osv_name = eco_registry.get(ecosystem).osv_ecosystem
+    except eco_registry.UnknownEcosystem as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    reports = _run_local(
+        run_crosscheck(db_path(), start, ecosystem=ecosystem, osv_ecosystem=osv_name)
+    )
+
+    t = Table(title=f"OpenSSF 신고 {osv_name} 악성 (감시 시작 {start:%m-%d %H:%M} UTC 이후)",
               title_justify="left")
     for col in ("올라온 시각 (근거)", "패키지", "결과", "근거"):
         t.add_column(col)

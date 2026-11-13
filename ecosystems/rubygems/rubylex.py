@@ -234,6 +234,10 @@ def _heredoc_ok(m: re.Match[str], prev_sig: str, prev_word: str) -> bool:
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_?!]*|\n|;")
 _OPENERS = {"def", "class", "module", "case", "begin", "if", "unless", "while", "until", "for"}
 _STMT_PREV_WORDS = {"then", "else", "do", "begin", "and", "or", "not", "elsif", "ensure"}
+#: 본문이 나중에 불릴 때 도는 블록을 여는 호출 (줄 안에서 ``do`` 앞에 온다)
+_DEFERRED_BLOCK = re.compile(
+    r"\b(?:define_method|define_singleton_method|lambda|proc)\b|\bProc\.new\b|->"
+)
 _ENDLESS_DEF = re.compile(r"\s*[\w.?!]+\s*(?:\([^)]*\))?\s*=(?![=~>])")
 
 
@@ -266,6 +270,15 @@ def def_regions(masked: str) -> list[tuple[int, int, str]]:
                     or last in "=(,{|&;:?[+-*"
                     or prev_tok in _STMT_PREV_WORDS
                 )
+                if stmt_start and not head:
+                    # 앞줄이 ``\`` 로 이어지면 줄 맨 앞이어도 수식어다:
+                    #     raise ArgumentError, "..." \
+                    #       unless method.is_a?(Symbol)
+                    # 여는 말로 세면 짝 없는 블록이 쌓여 def 의 end 를 먹고, 그 def 본문이 require
+                    # 시점 코드로 남는다 (실측 오탐: stripe 21.0.0 connection_manager.rb).
+                    prev_line = masked[:line_start].rstrip(" \t\r\n")
+                    if prev_line.endswith("\\"):
+                        stmt_start = False
                 is_open = stmt_start
             if is_open:
                 name = ""
@@ -291,6 +304,13 @@ def def_regions(masked: str) -> list[tuple[int, int, str]]:
         elif tok == "do":
             if loop_do_pending:
                 loop_do_pending = False
+            elif _DEFERRED_BLOCK.search(head):
+                # ``define_method('x') do``·``lambda do``·``proc do`` 의 본문은 그 메서드를 부를 때
+                # 돈다 — def 본문과 같다. 일반 블록으로 두면 본문이 require 시점 코드로 남아, 거기서
+                # 부르는 메서드의 본문까지 되살아난다. 실측 오탐(감시기 첫 주기, 2026-11-14):
+                # crawlora-speedrun·-openligadb·-modrinth — API 클라이언트 메서드 안의
+                # ``Net::HTTP.new``. 스캔한 rubygems 4개 중 3개가 이 오탐이었다.
+                stack.append(("def", m.start(), ""))
             else:
                 stack.append(("do", m.start(), ""))
         elif tok == "end" and stack:

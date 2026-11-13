@@ -517,3 +517,73 @@ async def test_live_rake():
     async with httpx.AsyncClient(follow_redirects=True) as c:
         p = await ADAPTER.fetch_project("rake", client=c)
     assert p.latest and p.releases
+
+
+_DEFINE_METHOD_CLIENT = r"""
+require "net/http"
+module Foo
+  class Client
+    def request(op)
+      http = Net::HTTP.new('api.example.com', 443)
+      http.start { |c| c.request(op) }
+    end
+    define_method('catalog') do |**params|
+      request('catalog')
+    end
+  end
+end
+"""
+
+
+def test_define_method_block_body_is_not_load_time():
+    """define_method 블록 안에서 부른 메서드의 본문은 require 시점 코드가 아니다 (실측 오탐:
+    crawlora-* API 클라이언트 — 생성된 메서드들이 request() 를 부르고, 그 안에 Net::HTTP.new)."""
+    from ecosystems import get
+    from engine.rules.base import MemoryTree
+
+    findings = get("rubygems").analyze_tree(MemoryTree({"lib/foo.rb": _DEFINE_METHOD_CLIENT}))
+    assert not [f for f in findings if f.severity.value in ("high", "critical")]
+
+
+_BACKSLASH_MODIFIER = r"""
+require "net/http"
+class Manager
+  def execute_request(method, uri)
+    raise ArgumentError, "method should be a symbol" \
+      unless method.is_a?(Symbol)
+    raise ArgumentError, "uri should be a string" \
+      if uri.nil?
+    create_connection(uri)
+  end
+
+  private def create_connection(uri)
+    Net::HTTP.new(uri.host, uri.port).start
+  end
+end
+"""
+
+
+def test_backslash_continued_modifier_does_not_break_def_scope():
+    """``\`` 로 이어진 줄 맨 앞의 if/unless 는 수식어다 (실측 오탐: stripe 21.0.0)."""
+    from ecosystems import get
+    from engine.rules.base import MemoryTree
+
+    findings = get("rubygems").analyze_tree(MemoryTree({"lib/manager.rb": _BACKSLASH_MODIFIER}))
+    assert not [f for f in findings if f.severity.value in ("high", "critical")]
+
+
+def test_marshal_load_of_bundled_data_file_is_not_high():
+    """압축된 자기 데이터 파일을 Marshal.load 하는 표 로딩 (실측 오탐: unicode-display_width)."""
+    from ecosystems import get
+    from engine.rules.base import MemoryTree
+
+    benign = 'INDEX = Marshal.load(Zlib::GzipReader.open(INDEX_FILENAME, &:read))\n'
+    evil = 'Marshal.load(Zlib::Inflate.inflate(Base64.decode64("eJxLzs8tyM9LzSsBAA==")))\n'
+    adapter = get("rubygems")
+
+    def high(src: str) -> list:
+        tree = MemoryTree({"lib/foo.rb": 'require "zlib"\n' + src})
+        return [f for f in adapter.analyze_tree(tree) if f.severity.value in ("high", "critical")]
+
+    assert not high(benign)
+    assert high(evil)
