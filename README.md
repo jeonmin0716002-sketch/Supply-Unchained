@@ -342,11 +342,31 @@ uv run python -m cli.su_scan check-file requirements.txt   # block 있으면 exi
 
 | 지표 | 데이터 | 결과 |
 |---|---|---|
-| 탐지율 — 악성 목적 패키지 (**최종, 처음 보는 세트**) | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중, 앞의 두 세트 600개를 **뺀** 무작위 300개 (패키지당 1버전, seed 99) | **80.7%** (242/300, 95% CI 75.8–84.7%) |
+| 탐지율 — 악성 목적 패키지 (**최종, 처음 보는 세트**) | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) PyPI `malicious_intent` 중, 앞의 두 세트 600개를 **뺀** 무작위 300개 (패키지당 1버전, seed 99) | **81.0%** (243/300, 95% CI 76.2–85.0%) |
 | 탐지율 — held-out (seed 7) | 튜닝 세트 300개를 뺀 무작위 300개. 규칙을 고정한 채 잰 값 (이후 이 세트에서 놓친 두 계열로 규칙을 더해 참고용이 됨) | 80.7% (242/300) |
 | 탐지율 — 튜닝 세트 (seed 42) | 놓친 샘플을 보고 규칙을 고친 세트 — 참고용 | 77.0% (231/300) |
-| 탐지율 — 탈취된 정상 패키지 | 같은 데이터셋 `compromised_lib` 전체 (17개 패키지, 29개 버전 — ultralytics·litellm·mistralai·telnyx 등 실제 사고) | **62%** (18/29) |
-| 오탐률 (차단) | PyPI 다운로드 상위 300개 최신 버전 ([top-pypi-packages](https://hugovk.github.io/top-pypi-packages/)) | **0.7%** (2/289, 11개는 다운로드 오류) |
+| 탐지율 — 탈취된 정상 패키지 | 같은 데이터셋 `compromised_lib` 전체 (17개 패키지, 29개 버전 — ultralytics·litellm·mistralai·telnyx 등 실제 사고). 직전 정상 릴리스와 비교 | **93.1%** 차단 (27/29, CI 78.0–98.1%) · 끼워 넣은 코드로 잡은 것 **85.7%** (24/28). 이전 엔진은 62% (18/29) |
+| 오탐률 (차단) — 인기 패키지 | PyPI 다운로드 상위 300개 최신 버전 ([top-pypi-packages](https://hugovk.github.io/top-pypi-packages/)) | **0.7%** (2/299 — urllib3·coverage). 직전 릴리스 비교로 새로 차단된 것 0/299 |
+| 오탐률 (차단) — 신규 업로드 | 감시기가 실제로 본 PyPI 릴리스 16,181개 중 무작위 500개 (seed 20261113) | **0.20%** (1/491, CI 0.04–1.14%) |
+| npm 탐지율 · 오탐률 | DataDog 같은 데이터셋 `samples/npm` 중 처음 보는 300개 · npm 상위 300개 | **52.0%** (156/300, CI 46.4–57.6%) · 오탐 **0/300** — [docs/eval/npm.md](docs/eval/npm.md) |
+
+위 표는 2026-11 재측정 값이다. 근거와 규칙별 내역은 [docs/eval/py-engine.md](docs/eval/py-engine.md),
+[docs/eval/watch-new-uploads.md](docs/eval/watch-new-uploads.md). 아래 본문의 경과 설명에 나오는 수치(80.7% 등)는
+그 시점의 값이다.
+
+**탈취 패키지 62% → 93%: 직전 릴리스와 비교한다.** 설치·import 시점의 프로세스 실행은 정상 상위
+패키지의 6.9%에도 있어서 그 자체로는 막을 수 없다. 하지만 기존 패키지의 새 릴리스에 그것이 **처음
+나타나면** 계정 탈취의 전형이다. 그래서 그런 행위가 있을 때만 직전 릴리스를 추가로 받아 비교하고,
+새로 나타난 것만 차단 근거로 올린다(`engine/version_diff.py`). lightning 2.6.2(import 시 스레드에서
+번들 스크립트 실행)·memoryos 2.0.34·litellm 1.82.7 등 7개 버전이 이 비교로만 잡혔다. 정상 상위
+299쌍에서 이 비교로 새로 차단된 것은 0개다. 놓친 것은 num2words 2개 버전(아무 규칙도 안 걸림)이다.
+
+**신규 업로드에서 큐를 채우던 오탐.** 감시 이틀 동안 `block` 45건이 검토 큐에 올라 33건이 오탐,
+악성 확정은 0건이었다. 그 릴리스들을 다시 스캔해 원인별로 고쳤다 — 자기 모듈만 import 하는 `.pth`,
+PyPI·localhost 로 가는 버전 확인, 받기만 하고 실행하지 않는 setup.py 다운로드, 자기 라이브러리를
+압축해 넣은 blob. 예전에 차단됐던 74개 릴리스 중 지금도 차단되는 것은 21개이고, 악성 세 세트의
+탐지 수는 변하지 않았다. 남은 21개는 대부분 import 시점에 실제로 외부와 통신하는 코드라 의도적으로
+남겼다(목적지가 정상 서비스인지는 정적으로 가를 근거가 없다).
 
 ```bash
 uv run python tools/eval_malware_dataset.py --n 300 --seed 42 --out tuned.json      # 튜닝 세트
