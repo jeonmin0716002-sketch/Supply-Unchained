@@ -214,14 +214,56 @@ def _const_prefix(node: ast.AST | None) -> str | None:
     return None
 
 
-def _to_benign_host(call: ast.Call) -> bool:
+def _host_of(prefix: str) -> str:
     from urllib.parse import urlsplit
 
-    prefix = _const_prefix(_url_arg(call))
-    if prefix is None:
+    return ((urlsplit(prefix).hostname if "://" in prefix else prefix.split(":")[0]) or "").lower()
+
+
+def _to_benign_host(call: ast.Call, mod: Module | None = None) -> bool:
+    """목적지가 PyPI·localhost 상수 주소인가. URL 이 이름이면 같은 모듈의 그 이름에 대한
+    **모든** 대입이 그런 주소여야 한다 (실측: rubka 의 ``url = f"https://pypi.org/..."``,
+    sigmaflow 의 ``pkg_url = "https://pypi.org/rss/..."`` — 지역 변수를 거친다)."""
+    arg = _url_arg(call)
+    if isinstance(arg, ast.Name) and mod is not None:
+        values = [n.value for n in ast.walk(mod.tree) if isinstance(n, ast.Assign)
+                  for t in n.targets if isinstance(t, ast.Name) and t.id == arg.id]
+        prefixes = [_const_prefix(v) for v in values]
+        return bool(prefixes) and all(p is not None and _host_of(p) in _BENIGN_HOSTS
+                                      for p in prefixes)
+    prefix = _const_prefix(arg)
+    return prefix is not None and _host_of(prefix) in _BENIGN_HOSTS
+
+
+def _url_guarded(call: ast.Call, mod: Module) -> bool:
+    """"URL 이면 받고 아니면 파일을 연다" 도우미 안의 호출인가 — 같은 변수를
+    ``x.startswith(("http://", ...))`` 로 검사한 if 분기 안에서 그 변수를 URL 로 쓴다.
+    실측 오탐: matplotlib 3.11.2 ``_open_file_or_url`` (rcParams 로드가 import 시 거치지만
+    로컬 rc 파일이면 열기만 한다). 악성 코드가 자기 주소의 스킴을 검사할 이유는 없다."""
+    arg = _url_arg(call)
+    if not isinstance(arg, ast.Name):
         return False
-    host = (urlsplit(prefix).hostname if "://" in prefix else prefix.split(":")[0]) or ""
-    return host.lower() in _BENIGN_HOSTS
+    guarded = getattr(mod, "_su_url_guarded", None)
+    if guarded is None:
+        guarded = set()
+        for node in ast.walk(mod.tree):
+            if not isinstance(node, ast.If):
+                continue
+            checked = {
+                c.func.value.id for c in ast.walk(node.test)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == "startswith" and isinstance(c.func.value, ast.Name)
+                and any(isinstance(k, ast.Constant) and isinstance(k.value, str)
+                        and "://" in k.value for k in ast.walk(c))
+            }
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, ast.Call):
+                        a = _url_arg(sub)
+                        if isinstance(a, ast.Name) and a.id in checked:
+                            guarded.add(id(sub))
+        mod._su_url_guarded = guarded  # type: ignore[attr-defined]
+    return id(call) in guarded
 
 
 def _is_download(call: ast.Call, aliases: dict[str, str]) -> bool:
@@ -321,7 +363,8 @@ def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
         plain = what.startswith("프로세스 실행")
         net = what.startswith("네트워크 호출")
         indirect_net = r.indirect and net
-        if net and (_to_benign_host(node) or (download_ok and _is_download(node, aliases))):
+        if net and (_to_benign_host(node, r.module) or _url_guarded(node, r.module)
+                    or (download_ok and _is_download(node, aliases))):
             rule, cwe, sev = RULE_BENIGN_NET, "CWE-506", Severity.MEDIUM
         elif indirect_net:
             rule, cwe, sev = RULE_INDIRECT_NET, "CWE-506", Severity.MEDIUM

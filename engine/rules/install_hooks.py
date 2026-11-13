@@ -150,43 +150,94 @@ def _installs_at_site_packages_root(relpath: str) -> bool:
     )
 
 
-def pth_own_imports(line: str) -> list[str] | None:
-    """``import a, b.c`` 처럼 **import 문 하나뿐**인 줄이면 최상위 모듈 이름들, 아니면 None.
-    ``;`` 로 이어 붙인 코드·``exec``·``__import__`` 가 있으면 None 이다."""
+#: .pth 시작 훅에서 흔한 표준 모듈과, 그걸로 하는 일 — 경로 추가뿐
+_PTH_STDLIB = {"sys", "os", "site", "importlib"}
+_PTH_STDLIB_CALLS = {"sys.path.insert", "sys.path.append", "site.addsitedir",
+                     "os.environ.setdefault"}
+_PTH_ARG_CALLS = {"os.path.join", "os.path.dirname", "os.path.abspath"}
+
+
+def _pth_parse(line: str) -> tuple[list[str], list[str], list[str]] | None:
+    """시작 훅으로 흔한 형태면 (import 한 모든 점 이름, 자기 모듈 최상위 이름, 부르는 자기 모듈
+    함수의 점 이름), 아니면 None.
+
+    실측(신규 업로드 재스캔): dagz ``import dagz.sensor.bootstrap; dagz.sensor.bootstrap.
+    bootstrap()``, doeff-hy ``import doeff_hy_bytecode_guard; doeff_hy_bytecode_guard.install()``,
+    nvidia-cutlass-dsl ``import sys, os, nvidia_cutlass_dsl; sys.path.insert(0, os.path.join(
+    nvidia_cutlass_dsl.__path__[0], 'dsl_packages'))``. 그 밖의 문장(exec·__import__·
+    다른 모듈 호출·대입)이 하나라도 있으면 None — HIGH 그대로.
+    """
     try:
         tree = ast.parse(line)
     except (SyntaxError, ValueError):
         return None
-    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Import):
-        return None
-    return [a.name.split(".")[0] for a in tree.body[0].names]
+    imported: list[str] = []
+    own: list[str] = []
+    calls: list[str] = []
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for a in stmt.names:
+                if a.asname:
+                    return None
+                imported.append(a.name)
+                top = a.name.split(".")[0]
+                if top not in _PTH_STDLIB:
+                    own.append(top)
+            continue
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+            return None
+        call = stmt.value
+        name = _dotted(call.func) or ""
+        root = name.split(".")[0]
+        if root in _PTH_STDLIB:
+            if name not in _PTH_STDLIB_CALLS:
+                return None
+        elif root in own:
+            calls.append(name)
+        else:
+            return None
+        for arg in [*call.args, *(k.value for k in call.keywords)]:
+            for sub in ast.walk(arg):
+                if isinstance(sub, ast.Call) and (_dotted(sub.func) or "") not in _PTH_ARG_CALLS:
+                    return None
+    return (imported, own, calls) if own else None
+
+
+def pth_own_imports(line: str) -> list[str] | None:
+    """시작 훅 형태(_pth_parse)면 자기 모듈 최상위 이름들, 아니면 None."""
+    parsed = _pth_parse(line)
+    return parsed[1] if parsed else None
 
 
 def own_module_files(ctx: FileContext, top: str) -> list[str]:
     """같은 배포물 안에서 최상위 모듈 ``top`` 이 될 파일 (``top.py`` / ``top/__init__.py``)."""
     if ctx.tree is None:
         return []
+    # __init__.py 없는 namespace 패키지도 자기 모듈이다 (실측: dagz 휠의 dagz/)
     return [f for f in ctx.tree.files()
             if PurePosixPath(f).name == f"{top}.py"
-            or (PurePosixPath(f).name == "__init__.py" and PurePosixPath(f).parent.name == top)]
+            or (PurePosixPath(f).suffix == ".py" and top in PurePosixPath(f).parts[:-1])]
 
 
 def _pth_targets_flagged(ctx: FileContext, line: str) -> bool:
-    """.pth 가 import 하는 자기 모듈(점 경로의 각 단계)에 HIGH finding 이 있는가.
+    """.pth 가 import 하는 자기 모듈(점 경로의 각 단계)에 HIGH finding 이 있거나, .pth 가
+    부르는 자기 모듈 함수가 (따라가 보면) 네트워크·프로세스 실행·실행 싱크·디코딩에 닿는가.
 
-    있으면 .pth 는 "문제 있는 코드를 모든 파이썬 프로세스에서 띄우는 지속성 장치"라 HIGH 로
+    그렇다면 .pth 는 "문제 있는 코드를 모든 파이썬 프로세스에서 띄우는 지속성 장치"라 HIGH 로
     남긴다 (samples/sample5_mcp_typosquat: .pth → 자기 모듈 _telemetry 의 디코딩→exec).
     """
     from engine.rules import AST_RULES  # 순환 import 방지
+    from engine.rules.exec_scope import ModuleIndex, Scope, body_nodes
 
-    try:
-        names = [a.name for a in ast.parse(line).body[0].names]  # type: ignore[attr-defined]
-    except (SyntaxError, ValueError, AttributeError, IndexError):
+    parsed = _pth_parse(line)
+    if parsed is None or ctx.tree is None:
         return True
-    assert ctx.tree is not None
+    imported, own, calls = parsed
     files = set()
-    for dotted in names:
+    for dotted in imported:
         parts = tuple(dotted.split("."))
+        if parts[0] not in own:
+            continue
         for i in range(1, len(parts) + 1):
             want = parts[:i]
             for f in ctx.tree.files():
@@ -206,7 +257,40 @@ def _pth_targets_flagged(ctx: FileContext, line: str) -> bool:
         for rule in AST_RULES:
             if any(x.severity in (Severity.HIGH, Severity.CRITICAL) for x in rule(sub, tree)):
                 return True
+    # 부르는 자기 모듈 함수 — 본문을 따라가 본다
+    index = ModuleIndex.of(ctx.tree)
+    for call in calls:
+        mod_part, _, func = call.rpartition(".")
+        target_files = [f for f in files
+                        if (PurePosixPath(f).parent.parts if PurePosixPath(f).name == "__init__.py"
+                            else PurePosixPath(f).with_suffix("").parts)[-len(mod_part.split(".")):]
+                        == tuple(mod_part.split("."))]
+        if not target_files:  # namespace 패키지면 모듈 파일로 찾는다
+            target_files = [f for f in ctx.tree.files() if PurePosixPath(f).with_suffix("")
+                            .parts[-len(mod_part.split(".")):] == tuple(mod_part.split("."))]
+        if not target_files:
+            return True  # 어디 있는지 모르면 못 본 것이다
+        mod = index.module(target_files[0])
+        scope = Scope(index)
+        # 재수출(__init__.py 의 ``from .loader_hooks import install``)까지 푼다 — 실측 doeff-hy
+        found = scope._lookup_in(mod, [func], 0) if mod is not None else None
+        if found is None or not isinstance(found[1], (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return True
+        for r in scope.run(found[0], body_nodes(found[1])):
+            if isinstance(r.node, ast.Call) and _risky_call(r.node, r.module.aliases):
+                return True
     return False
+
+
+def _risky_call(call: ast.Call, aliases: dict[str, str]) -> bool:
+    from engine.rules.base import resolve_name
+    from engine.rules.code_patterns import _DECODERS
+    from engine.rules.install_time import _is_network_call, _is_spawn
+
+    name = resolve_name(call.func, aliases) or ""
+    return (_is_network_call(call, aliases) or _is_spawn(call, aliases)
+            or name in {"exec", "eval", "compile", "__import__", "builtins.exec", "builtins.eval"}
+            or name in _DECODERS or name.startswith("ctypes."))
 
 
 def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:

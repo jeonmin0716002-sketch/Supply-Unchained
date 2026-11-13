@@ -1399,3 +1399,59 @@ def test_pth_loading_a_flagged_own_module_stays_high():
     files = {**_WHEEL, "p.pth": "import p._telemetry\n", "p/__init__.py": "",
              "p/_telemetry.py": "import base64\nexec(base64.b64decode('cHJpbnQoMSk='))\n"}
     assert [f.severity for f in _pth(files)] == [Severity.HIGH]
+
+
+@pytest.mark.parametrize(
+    ("files", "sev"),
+    [
+        # dagz — 자기 모듈 함수를 부르는 시작 훅, 그 함수는 조용하다
+        ({**_WHEEL, "zzzz_d.pth": "import d.sensor.boot; d.sensor.boot.bootstrap()\n",
+          "d/__init__.py": "", "d/sensor/__init__.py": "",
+          "d/sensor/boot.py": "import sys\ndef bootstrap():\n    sys.setprofile(None)\n"},
+         Severity.MEDIUM),
+        # nvidia-cutlass-dsl — 경로 추가
+        ({**_WHEEL, "n.pth": "import sys, os, n; sys.path.insert(0, os.path.join("
+          "n.__path__[0], 'pk'))\n", "n/__init__.py": ""}, Severity.MEDIUM),
+        # 부르는 자기 모듈 함수가 프로세스를 띄운다
+        ({**_WHEEL, "g.pth": "import g; g.install()\n",
+          "g/__init__.py": "import subprocess\ndef install():\n    subprocess.Popen(['x'])\n"},
+         Severity.HIGH),
+        # 다른 모듈의 함수를 부른다
+        ({**_WHEEL, "g.pth": "import g, os; os.system('id')\n", "g/__init__.py": ""},
+         Severity.HIGH),
+    ],
+)
+def test_pth_startup_hook_forms(files, sev):
+    assert [f.severity for f in _pth(files)] == [sev]
+
+
+@pytest.mark.parametrize(
+    ("src", "high"),
+    [
+        # rubka — 지역 변수에 담은 PyPI 주소
+        ("import requests\ndef latest(n):\n    url = f'https://pypi.org/pypi/{n}/json'\n"
+         "    return requests.get(url, timeout=3)\nlatest('p')\n", False),
+        # 같은 이름에 다른 주소도 대입된다
+        ("import requests\nurl = 'https://pypi.org/x'\nurl = 'https://evil.example/c'\n"
+         "requests.get(url)\n", True),
+        # matplotlib — URL 이면 받고 아니면 파일을 여는 도우미
+        ("import urllib.request\ndef _open(fname):\n"
+         "    if fname.startswith(('http://', 'https://')):\n"
+         "        return urllib.request.urlopen(fname)\n    return open(fname)\n"
+         "RC = _open('matplotlibrc')\n", False),
+    ],
+)
+def test_registry_variable_and_url_or_file_helper(src, high):
+    files = {**_INIT, "p-1/pkg/__init__.py": src}
+    assert (RULE_INSTALL_TIME in _high_rules(files)) is high
+
+
+def test_vendored_blob_with_decode_utf8_is_medium():
+    """hpcp 실제 형태: exec(lzma.decompress(base64.a85decode(_SRC)).decode("utf-8"), m.__dict__)"""
+    import base64
+    import lzma
+
+    blob = base64.a85encode(lzma.compress(_LIB.encode())).decode()
+    src = (f"import base64, lzma, types\nmultiCMD = types.ModuleType('m')\n_SRC = {blob!r}\n"
+           "exec(lzma.decompress(base64.a85decode(_SRC)).decode('utf-8'), multiCMD.__dict__)\n")
+    assert [f.severity for f in _obf(src)] == [Severity.MEDIUM]

@@ -317,8 +317,9 @@ def _static_decode(expr: ast.AST, consts: dict[str, ast.AST], depth: int = 0) ->
     if not isinstance(expr, ast.Call):
         return None
     name = dotted_name(expr.func) or ""
-    func = name.rpartition(".")[2]
-    if func == "decode" and isinstance(expr.func, ast.Attribute) and not expr.args:
+    # ``<호출>.decode("utf-8")`` 은 수신자가 호출식이라 점 이름이 안 나온다 — 속성 이름으로 본다
+    func = expr.func.attr if isinstance(expr.func, ast.Attribute) else name.rpartition(".")[2]
+    if func == "decode" and isinstance(expr.func, ast.Attribute) and len(expr.args) <= 1:
         return _static_decode(expr.func.value, consts, depth + 1)
     if not expr.args:
         return None
@@ -346,7 +347,9 @@ def _static_decode(expr: ast.AST, consts: dict[str, ast.AST], depth: int = 0) ->
 def _vendored_source_is_quiet(call: ast.Call, tree: ast.Module) -> bool:
     if not _module_namespace(call):
         return False
-    consts = {t.id: n.value for n in tree.body if isinstance(n, ast.Assign)
+    # 블록(try/if) 안의 대입도 — 실측 hpcp 의 _SRC_B85 는 최상단이 아니었다. 상수만 쓴다.
+    consts = {t.id: n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+              and isinstance(n.value, ast.Constant)
               for t in n.targets if isinstance(t, ast.Name)}
     raw = _static_decode(call.args[0], consts)
     if raw is None:
