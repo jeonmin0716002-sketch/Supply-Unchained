@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import ast
 import re
+import tomllib
 from collections.abc import Iterable, Iterator
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from api.schemas import Severity, StaticFinding
 from engine.rules.base import (
@@ -34,9 +35,22 @@ from engine.rules.base import (
     make_finding,
     resolve_name,
 )
+from engine.rules.exec_scope import (
+    Module,
+    ModuleIndex,
+    Reached,
+    Scope,
+    body_nodes,
+    module_level,
+)
 
 RULE_INSTALL_TIME = "custom-install-time-exec"
 RULE_EXFIL = "custom-exfil-endpoint"
+RULE_INSTALL_SPAWN = "custom-install-time-spawn"
+RULE_INDIRECT_NET = "custom-install-time-network-indirect"
+
+#: detail 에서 "무엇을 했는가"와 "어디서 불렸는가"를 가르는 표식 (version_diff 가 쓴다)
+ORIGIN_MARK = "←"
 
 #: 실제로 패킷을 내보내는 함수만. 모듈의 아무 함수가 아니다 — httpx.Timeout()·
 #: requests.Session()·socket.getprotobyname() 은 통신하지 않는다 (정상 상위 300개 실측
@@ -75,6 +89,20 @@ _SUSPICIOUS_CMD = re.compile(
     re.IGNORECASE,
 )
 _HIDDEN_FLAGS = {"CREATE_NO_WINDOW", "DETACHED_PROCESS"}
+
+#: 설치·import 시점에 정상 패키지가 흔히 돌리는 빌드·환경 조사 명령. 이 밖의 프로세스 실행은
+#: 수상 토큰이 없어도 MEDIUM 으로 남긴다 — 탈취 패키지 lightning 2.6.2 는
+#: ``Popen([sys.executable, 번들 스크립트])``, memoryos 2.0.34 는 ``Popen([번들 바이너리, ...])``
+#: 였고 둘 다 명령 문자열이 평범했다. 홀로는 판정을 바꾸지 않고(정상 라이브러리도 import 시
+#: GPU 확인 등을 한다), **새 릴리스에서 처음 나타나면** version_diff 가 HIGH 로 올린다.
+_ORDINARY_COMMANDS = frozenset({
+    "git", "hg", "svn", "cmake", "make", "gmake", "ninja", "meson", "pkg-config", "pkgconf",
+    "gcc", "g++", "cc", "c++", "clang", "clang++", "cl", "ld", "ar", "gfortran", "icc", "icpc",
+    "icx", "ifort", "nvcc", "hipcc", "mpicc", "mpicxx", "swig", "rustc", "cargo", "go",
+    "nvidia-smi", "rocm-smi", "rocminfo", "uname", "ldconfig", "ldd", "otool", "xcrun",
+    "xcode-select", "sw_vers", "lsb_release", "lscpu", "lspci", "sysctl", "getconf", "nproc",
+    "which", "where", "brew", "ccache", "sccache", "file",
+})
 
 _EXFIL_PATTERNS = (
     ("Discord 웹훅", re.compile(r"discord(?:app)?\.com/api/webhooks/\d{15,}/[\w-]{20,}")),
@@ -128,67 +156,28 @@ def _suspicious_spawn(call: ast.Call, aliases: dict[str, str]) -> str | None:
     return None
 
 
-# ── 실행 범위 ─────────────────────────────────────────────────────
+def command_head(call: ast.Call, aliases: dict[str, str]) -> str:
+    """실행하는 명령의 이름(경로·확장자 뺀 첫 낱말). 정적으로 모르면 ``?``.
 
-_DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
-
-
-def _walk_executed(node: ast.AST) -> Iterator[ast.AST]:
-    """ast.walk 와 같되, 호출해야만 도는 함수·클래스·람다 본문으로는 내려가지 않는다."""
-    stack = [node]
-    while stack:
-        cur = stack.pop()
-        yield cur
-        stack.extend(c for c in ast.iter_child_nodes(cur) if not isinstance(c, _DEFS))
-
-
-def _is_main_guard(stmt: ast.stmt) -> bool:
-    """``if __name__ == "__main__":`` — ``and`` 로 조건을 덧붙인 형태도 (실측 오탐: rpi-hwid 의
-    ``if __name__ == "__main__" and not globals().get(...)``)."""
-    if not isinstance(stmt, ast.If):
-        return False
-    return any(
-        isinstance(n, ast.Compare)
-        and any(isinstance(p, ast.Name) and p.id == "__name__" for p in [n.left, *n.comparators])
-        for n in ast.walk(stmt.test)
-    )
-
-
-def _module_level(tree: ast.Module, *, include_main: bool) -> Iterator[ast.AST]:
-    for stmt in tree.body:
-        if isinstance(stmt, _DEFS):
-            continue
-        if not include_main and _is_main_guard(stmt):
-            continue
-        yield from _walk_executed(stmt)
-
-
-def _follow_local_calls(nodes: list[ast.AST], tree: ast.Module) -> list[ast.AST]:
-    """실행 범위에서 부르는 **같은 파일의 함수** 본문을 범위에 더한다 (재귀, 중복 없이).
-
-    실측(dependency-confusion 샘플): 훅은 ``custom_command()`` 한 줄이고, 유출 코드는 그
-    함수 안 ``socket.getaddrinfo(...)`` 에 있었다. 함수 본문을 안 따라가면 못 본다.
+    ``[sys.executable, ...]`` 은 ``python`` — 파이썬으로 무엇을 돌리는지는 뒤 인자에 있다.
     """
-    funcs = {
-        n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    out, todo, done = list(nodes), list(nodes), set()
-    while todo:
-        node = todo.pop()
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
-            continue
-        fn = funcs.get(node.func.id)
-        if fn is None or fn.name in done:
-            continue
-        done.add(fn.name)
-        # 함수 안에 정의된 함수(웹 핸들러 등)는 그 함수를 부를 때가 아니라 요청이 올 때 돈다
-        # (실측 오탐: fd-open-data-mcp — create_app() 안 라우트 핸들러의 urlopen)
-        body = [
-            n for stmt in fn.body if not isinstance(stmt, _DEFS) for n in _walk_executed(stmt)
-        ]
-        out.extend(body)
-        todo.extend(body)
-    return out
+    arg: ast.AST | None = call.args[0] if call.args else next(
+        (k.value for k in call.keywords if k.arg in ("args", "cmd", "command", "path")), None)
+    if isinstance(arg, (ast.List, ast.Tuple)) and arg.elts:
+        arg = arg.elts[0]
+    elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        arg = ast.Constant(arg.value.strip().split(" ")[0] if arg.value.strip() else "")
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value:
+        name = PurePosixPath(arg.value.strip("\"'").replace("\\", "/")).name.lower()
+        return name.removesuffix(".exe")
+    if arg is not None and _resolve(arg, aliases) == "sys.executable":
+        return "python"
+    return "?"
+
+
+# ── 실행 범위 ─────────────────────────────────────────────────────
+# 범위 계산 자체는 engine/rules/exec_scope.py — 파일 경계를 넘는 추적(다른 모듈 함수,
+# 인스턴스화, 스레드에 넘긴 함수)의 실측 근거도 그쪽 docstring 에 있다.
 
 
 def _hook_classes(tree: ast.Module) -> list[ast.ClassDef]:
@@ -205,79 +194,91 @@ def _hook_classes(tree: ast.Module) -> list[ast.ClassDef]:
     return [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name in names]
 
 
-def _local_module_scopes(
-    nodes: list[ast.AST], aliases: dict[str, str], ctx: FileContext
-) -> list[tuple[str, list[ast.AST], dict[str, str]]]:  # (relpath, 범위, 별칭)
-    """setup.py 의 실행 범위가 import 해서 **실제로 부르는** 로컬 모듈 코드.
-
-    모듈 파일 전체가 아니라 (1) 그 모듈의 최상단(import 순간 실행)과 (2) setup.py 가 부른
-    함수의 본문만이다. 파일 전체로 잡으면 버전 문자열만 가져오는 nodeenv 의 setup.py 가
-    nodeenv.py 안 모든 urlopen 때문에 걸렸다. 악성 쪽(``from main import main; main()``)은
-    (2)로 그대로 잡힌다.
-    """
-    if ctx.tree is None:
-        return []
-    base = PurePosixPath(ctx.relpath).parent
-    called = {_resolve(n.func, aliases) for n in nodes if isinstance(n, ast.Call)}
-    imported = {
-        node.module if isinstance(node, ast.ImportFrom) else a.name
-        for node in nodes
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        and not getattr(node, "level", 0)
-        and (not isinstance(node, ast.ImportFrom) or node.module)
-        for a in node.names
-    }
-    out = []
-    for mod in sorted(imported):
-        rel = PurePosixPath(*mod.split("."))
-        for cand in (base / rel.with_suffix(".py"), base / rel / "__init__.py"):
-            text = ctx.tree.read(cand.as_posix())
-            if text is None:
-                continue
-            try:
-                sub = ast.parse(text)
-            except (SyntaxError, ValueError):
-                break
-            funcs = {n.name: n for n in sub.body
-                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-            scope = list(_module_level(sub, include_main=False))
-            for name, fn in funcs.items():
-                if f"{mod}.{name}" in called:
-                    scope.extend(
-                        n for stmt in fn.body if not isinstance(stmt, _DEFS)
-                        for n in _walk_executed(stmt)
-                    )
-            out.append((cand.as_posix(), _follow_local_calls(scope, sub), _aliases(sub)))
-            break
-    return out
+def _seed_module(ctx: FileContext, tree: ast.Module) -> tuple[ModuleIndex, Module]:
+    index = ModuleIndex.of(ctx.tree)
+    mod = index.module(ctx.relpath, tree) if ctx.tree is not None else None
+    if mod is None:  # 트리 없이 파일 하나만 볼 때
+        name = PurePosixPath(ctx.relpath).stem
+        mod = Module(relpath=ctx.relpath, tree=tree, name=name,
+                     root=PurePosixPath(ctx.relpath).parent, is_pkg=False)
+        mod.aliases = _aliases(tree)
+        mod.defs = {d.name: d for d in tree.body
+                    if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    return index, mod
 
 
 # ── 규칙 ──────────────────────────────────────────────────────────
 
-def _check(nodes: Iterable[ast.AST], ctx: FileContext, when: str, aliases: dict[str, str],
-           origin: str = "") -> Iterator[StaticFinding]:
-    seen: set[tuple[int, str]] = set()
-    for node in nodes:
+def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
+           *, seed: Module) -> Iterator[StaticFinding]:
+    """범위 안의 호출 중 (1) 네트워크 (2) 수상한 명령 실행을 HIGH 로, (3) 그 밖의 프로세스
+    실행(평범한 빌드·조사 명령 제외)을 MEDIUM 으로.
+
+    확장 범위(다른 모듈 경유·인스턴스 메서드·스레드에 넘긴 함수·클래스 본문)에서만 닿은
+    **네트워크 호출**은 MEDIUM(``custom-install-time-network-indirect``)이다. 탈취 세트의 직전
+    정상 버전 16개 중 3개(litellm 1.82.6 의 import 시 모델 가격표 다운로드, elementary-data
+    0.23.2 의 최신 버전 확인, memoryos 2.0.33 의 설정 로드)와 정상 상위 300개 중 lxml(빌드
+    옵션에 따른 libxml2 다운로드 — setup.py 에서 두 모듈 건너)이 이 범위의 통신으로 HIGH 가
+    됐다. 새 릴리스에 처음 나타나면 version_diff 가 HIGH 로 올린다. 수상한 명령 실행은
+    정상 패키지에서 이 범위로 나온 적이 없어 HIGH 그대로다.
+
+    다른 모듈에 있는 코드는 그 모듈 위치로 보고하고, 어디서 불렸는지를 ``←`` 뒤에 적는다.
+    ``←`` 앞부분(무엇을 했는가)은 버전 비교(engine/version_diff.py)가 행위의 이름으로 쓴다.
+    """
+    seen: set[tuple[str, int, str]] = set()
+    # 같은 줄에 예전 범위로도 닿았으면 그쪽(HIGH)을 먼저 본다
+    for r in sorted(reached, key=lambda r: r.indirect):
+        node = r.node
         if not isinstance(node, ast.Call):
             continue
+        aliases = r.module.aliases
         if _is_network_call(node, aliases):
             what = f"네트워크 호출 {_resolve(node.func, aliases)}()"
         elif (token := _suspicious_spawn(node, aliases)) is not None:
             what = f"수상한 명령 실행 {_resolve(node.func, aliases)}() — '{token}'"
+        elif _is_spawn(node, aliases):
+            head = command_head(node, aliases)
+            if head in _ORDINARY_COMMANDS:
+                continue
+            what = f"프로세스 실행 {_resolve(node.func, aliases)}() — 명령 '{head}'"
         else:
             continue
-        key = (node.lineno, what)
+        key = (r.module.relpath, node.lineno, what)
         if key in seen:
             continue
         seen.add(key)
+        plain = what.startswith("프로세스 실행")
+        indirect_net = r.indirect and what.startswith("네트워크 호출")
+        if indirect_net:
+            rule, cwe, sev = RULE_INDIRECT_NET, "CWE-506", Severity.MEDIUM
+        elif plain:
+            rule, cwe, sev = RULE_INSTALL_SPAWN, "CWE-78", Severity.MEDIUM
+        else:
+            rule, cwe, sev = RULE_INSTALL_TIME, "CWE-506", Severity.HIGH
         yield make_finding(
-            rule=RULE_INSTALL_TIME,
-            cwe="CWE-506",
-            severity=Severity.HIGH,
-            ctx=ctx,
+            rule=rule,
+            cwe=cwe,
+            severity=sev,
+            ctx=_ctx_for(r.module, ctx),
             line=node.lineno,
-            detail=f"{when} {what}{origin}",
+            detail=f"{when} {what}{_origin(r, seed)}",
         )
+
+
+def _ctx_for(mod: Module, ctx: FileContext) -> FileContext:
+    """위치는 실제 코드가 있는 모듈로 보고한다 (setup.py 줄번호로 붙이면 엉뚱한 줄)."""
+    if mod.relpath == ctx.relpath:
+        return ctx
+    return FileContext(path=Path(mod.relpath), relpath=mod.relpath, text="", tree=ctx.tree)
+
+
+def _origin(r: Reached, seed: Module) -> str:
+    parts = []
+    if r.via_thread:
+        parts.append("스레드·종료 훅 등에 넘겨져 실행")
+    if r.module.relpath != seed.relpath:
+        parts.append(f"{seed.relpath} 에서 불림")
+    return f" {ORIGIN_MARK} " + ", ".join(parts) if parts else ""
 
 
 def _is_install_script(ctx: FileContext) -> bool:
@@ -321,24 +322,38 @@ def _is_package_module(ctx: FileContext) -> bool:
 
 
 def install_time_exec(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding]:
-    aliases = _aliases(tree)
     if _is_install_script(ctx):
-        top = _follow_local_calls(list(_module_level(tree, include_main=True)), tree)
-        hooks = _follow_local_calls([n for c in _hook_classes(tree) for n in ast.walk(c)], tree)
-        yield from _check(top, ctx, "pip install 시 setup.py 가 실행하는", aliases)
-        yield from _check(hooks, ctx, "pip install 시 설치 훅이 실행하는", aliases)
-        # 훅·최상단이 불러 실행하는 패키지 안 모듈은 파일 전체가 설치 시점 코드다
-        for relpath, scope, sub_aliases in _local_module_scopes(top + hooks, aliases, ctx):
-            # 위치는 실제 코드가 있는 모듈로 보고한다 (setup.py 줄번호로 붙이면 엉뚱한 줄)
-            mod_ctx = FileContext(path=ctx.path.parent / PurePosixPath(relpath).name,
-                                  relpath=relpath, text="", tree=ctx.tree)
-            when = "pip install 시 setup.py 가 불러 실행하는"
-            yield from _check(scope, mod_ctx, when, sub_aliases)
+        index, seed = _seed_module(ctx, tree)
+        # setup.py 범위 안의 import 는 그 로컬 모듈 최상단을 이번에 처음 실행시킨다
+        top_scope = Scope(index, import_toplevel=True)
+        top_scope.run(seed, list(module_level(tree, include_main=True, definitions=False)))
+        top = top_scope.run(seed, list(module_level(tree, include_main=True, statements=False)),
+                            indirect=True)
+        yield from _check(_split(top, seed, True), ctx,
+                          "pip install 시 setup.py 가 실행하는", seed=seed)
+        yield from _check(_split(top, seed, False), ctx,
+                          "pip install 시 setup.py 가 불러 실행하는", seed=seed)
+        hooks = Scope(index, import_toplevel=True)
+        for cls in _hook_classes(tree):
+            hooks.run(seed, list(ast.walk(cls)), cls=(seed, cls))
+        yield from _check(_split(hooks.reached, seed, True), ctx,
+                          "pip install 시 설치 훅이 실행하는", seed=seed)
+        yield from _check(_split(hooks.reached, seed, False), ctx,
+                          "pip install 시 setup.py 가 불러 실행하는", seed=seed)
         return
     if not _is_package_module(ctx):
         return
-    scope = _follow_local_calls(list(_module_level(tree, include_main=False)), tree)
-    yield from _check(scope, ctx, "import 시점에 실행되는", aliases)
+    index, seed = _seed_module(ctx, tree)
+    scope = Scope(index)
+    scope.run(seed, list(module_level(tree, include_main=False, definitions=False)))
+    # 정의 시점 코드(클래스 본문·데코레이터)는 확장 범위다
+    reached = scope.run(seed, list(module_level(tree, include_main=False, statements=False)),
+                        indirect=True)
+    yield from _check(reached, ctx, "import 시점에 실행되는", seed=seed)
+
+
+def _split(reached: list[Reached], seed: Module, local: bool) -> list[Reached]:
+    return [r for r in reached if (r.module.relpath == seed.relpath) == local]
 
 
 def exfil_endpoint(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding]:
@@ -356,3 +371,119 @@ def exfil_endpoint(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding
                     detail=f"토큰이 포함된 {label} 주소가 코드에 박혀 있음 — 유출 채널의 전형",
                 )
                 break
+
+
+# ── 콘솔 스크립트 진입점 ──────────────────────────────────────────
+# [project.scripts]·setup(entry_points=...)·entry_points.txt 의 함수는 사용자가 명령을
+# **직접 실행할 때** 돈다. CLI 가 네트워크를 쓰는 건 정상이라(다운로더·API 클라이언트)
+# 네트워크 호출은 보지 않는다. 수상한 명령 실행(숨김 PowerShell, curl|sh 등)만 HIGH 다 —
+# import 시점 규칙과 같은 토큰 목록이고, 정상 상위 300개에서 이 조합이 나온 패키지 수는
+# docs/eval/py-engine.md 에 있다.
+
+RULE_ENTRYPOINT = "custom-entrypoint-exec"
+
+#: 진입점에서는 다운로드 도구 자체는 정상이다 — 실측 오탐: ultralytics 8.3.40·8.3.44 의
+#: ``yolo`` 명령이 내려받기 재시도에 ``subprocess.run(["curl", ...])`` 를 쓴다 (탈취 세트의
+#: 직전 정상 버전). ``curl ... | sh`` 처럼 다른 수상 토큰이 함께 있으면 여전히 HIGH 다.
+_ENTRY_DOWNLOADERS = {"curl", "wget", "invoke-webrequest", "iwr"}
+
+
+def _entry_suspicious(call: ast.Call, aliases: dict[str, str]) -> str | None:
+    if _suspicious_spawn(call, aliases) is None:
+        return None
+    tokens = {m.group(0).lower() for sub in ast.walk(call)
+              if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+              for m in _SUSPICIOUS_CMD.finditer(sub.value)}
+    rest = tokens - _ENTRY_DOWNLOADERS
+    if tokens and not rest:
+        return None
+    return sorted(rest)[0] if rest else _suspicious_spawn(call, aliases)
+_ENTRY_FILES = {"pyproject.toml", "setup.cfg", "entry_points.txt", "setup.py"}
+_SPEC = re.compile(r"^\s*([\w.\-]+)\s*=\s*([\w.]+)\s*:\s*([\w.]+)")
+
+
+def _entry_specs(ctx: FileContext) -> list[tuple[str, str]]:
+    """(모듈 점 이름, 함수 이름) 목록 — console_scripts·gui_scripts 만."""
+    specs: list[str] = []
+    if ctx.name == "pyproject.toml":
+        try:
+            data = tomllib.loads(ctx.text)
+        except (tomllib.TOMLDecodeError, ValueError):
+            return []
+        proj = data.get("project") or {}
+        tables = [proj.get("scripts"), proj.get("gui-scripts"),
+                  ((data.get("tool") or {}).get("poetry") or {}).get("scripts")]
+        specs = [f"x = {v}" for t in tables if isinstance(t, dict)
+                 for v in t.values() if isinstance(v, str)]
+    elif ctx.name in ("setup.cfg", "entry_points.txt"):
+        section = None
+        for line in ctx.text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("["):
+                section = stripped.strip("[]").strip()
+            elif section in ("console_scripts", "gui_scripts", "options.entry_points"):
+                if stripped.startswith(("console_scripts", "gui_scripts")):
+                    stripped = stripped.split("=", 1)[1]
+                specs.append(stripped)
+    elif ctx.name == "setup.py":
+        try:
+            tree = ast.parse(ctx.text)
+        except (SyntaxError, ValueError):
+            return []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "entry_points":
+                        specs += [n.value for n in ast.walk(kw.value)
+                                  if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    out = []
+    for spec in specs:
+        m = _SPEC.match(spec) or _SPEC.match(f"x = {spec.strip()}")
+        if m:
+            out.append((m.group(2), m.group(3)))
+    return out
+
+
+def entrypoint_exec(ctx: FileContext) -> Iterable[StaticFinding]:
+    if ctx.name not in _ENTRY_FILES or ctx.tree is None:
+        return
+    if ctx.name == "setup.py" and not _is_install_script(ctx):
+        return
+    specs = _entry_specs(ctx)
+    if not specs:
+        return
+    index = ModuleIndex.of(ctx.tree)
+    base = PurePosixPath(ctx.relpath).parent
+    if base.name.endswith((".egg-info", ".dist-info")):
+        base = base.parent
+    seen: set[tuple[str, int]] = set()
+    for modname, attr in specs:
+        rel = PurePosixPath(*modname.split("."))
+        mod = None
+        for root in (base, base / "src"):
+            for cand in (root / rel.with_suffix(".py"), root / rel / "__init__.py"):
+                mod = index.module(cand.as_posix())
+                if mod is not None:
+                    break
+            if mod is not None:
+                break
+        if mod is None:
+            continue
+        scope = Scope(index)
+        target = scope._lookup_in(mod, attr.split("."), 0)
+        if target is None or not isinstance(target[1], (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for r in scope.run(target[0], body_nodes(target[1])):
+            node = r.node
+            if not isinstance(node, ast.Call):
+                continue
+            token = _entry_suspicious(node, r.module.aliases)
+            if token is None or (r.module.relpath, node.lineno) in seen:
+                continue
+            seen.add((r.module.relpath, node.lineno))
+            what = f"수상한 명령 실행 {_resolve(node.func, r.module.aliases)}() — '{token}'"
+            yield make_finding(
+                rule=RULE_ENTRYPOINT, cwe="CWE-506", severity=Severity.HIGH,
+                ctx=_ctx_for(r.module, ctx), line=node.lineno,
+                detail=f"콘솔 명령 {modname}:{attr} 실행 시 {what} {ORIGIN_MARK} {ctx.relpath}",
+            )
