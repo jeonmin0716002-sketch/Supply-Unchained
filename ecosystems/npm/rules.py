@@ -474,9 +474,11 @@ def _install_js_refs(mod: jslex.Module) -> list[str]:
     names = {c.name.rsplit(".", 1)[-1] for c in jslex.calls(mod, executed_only=False)}
     if not names & _SPAWN:
         return []
-    return [t.value.lstrip("/") for t in mod.tokens
-            if t.kind == "str" and t.value.endswith(_JS_SUFFIXES) and "/" not in t.value[:1]
-            and len(t.value) < 120 and " " not in t.value]
+    # 템플릿 조각도 본다 — `${__dirname}/main.js` 는 "/main.js" 조각으로 남는다 (실측:
+    # espresso-idling-resource·hibernate-validator 의 postinstall)
+    # 'main' + '.js' 처럼 나눈 것도 합쳐 본다 (string_values)
+    return [v.lstrip("/") for v in jslex.string_values(mod, 0, len(mod.tokens))
+            if v.endswith(_JS_SUFFIXES) and len(v) < 120 and " " not in v and ".." not in v]
 
 
 def _secret_used(mod: jslex.Module, i: int) -> bool:
