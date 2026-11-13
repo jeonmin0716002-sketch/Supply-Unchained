@@ -426,12 +426,39 @@ def require_target(toks: list[Token], i: int) -> str | None:
         if toks[j].kind in ("str", "tpl"):
             parts.append(toks[j].value)
             j += 1
-            if j < len(toks) and _is(toks[j], "punct", "+"):
-                j += 1
-                continue
+        elif (decoded := _char_codes(toks, j)) is not None:
+            # require(String.fromCharCode(104,116,116,112,115)) — 실측(cms_comp_static):
+            # 모듈 이름을 문자 코드로 숨긴다
+            parts.append(decoded[0])
+            j = decoded[1]
+        else:
+            break
+        if j < len(toks) and _is(toks[j], "punct", "+"):
+            j += 1
+            continue
         break
     if parts and j < len(toks) and _is(toks[j], "punct", ")"):
         return _strip_node("".join(parts))
+    return None
+
+
+def _char_codes(toks: list[Token], j: int) -> tuple[str, int] | None:
+    """``String.fromCharCode(n, n, ...)`` 를 풀어 (문자열, 다음 인덱스)."""
+    if not (j + 3 < len(toks) and _is(toks[j], "id", "String") and _is(toks[j + 1], "punct", ".")
+            and _is(toks[j + 2], "id", "fromCharCode") and _is(toks[j + 3], "punct", "(")):
+        return None
+    k, out = j + 4, []
+    while k < len(toks) and toks[k].kind == "num":
+        try:
+            out.append(chr(int(toks[k].value, 0) if toks[k].value[:2].lower() in ("0x", "0o", "0b")
+                           else int(toks[k].value)))
+        except (ValueError, OverflowError):
+            return None
+        k += 1
+        if k < len(toks) and _is(toks[k], "punct", ","):
+            k += 1
+    if k < len(toks) and _is(toks[k], "punct", ")") and out:
+        return "".join(out), k + 1
     return None
 
 

@@ -28,6 +28,11 @@ class NpmEcosystem(Ecosystem):
         "pnpm-lock.yaml",
     )
     has_feed = True
+    #: 선택 추출(core-pipeline)이 풀어야 할 파일 — 규칙이 읽는 것만. 타르볼 안 바이너리·이미지는
+    #: 규칙이 보지 않는다.
+    scan_suffixes: ClassVar[tuple[str, ...]] = (
+        ".js", ".cjs", ".mjs", ".json", ".gyp", ".sh", ".ts", ".npmrc", ".py", ".bat", ".ps1",
+    )
 
     #: npm 이름 규칙(validate-npm-package-name) 중 URL 안전한 부분: 소문자·숫자·``-._~``,
     #: 선택적 ``@scope/``. 대문자는 옛 패키지(``JSONStream`` 등)에 남아 있어 허용한다.
