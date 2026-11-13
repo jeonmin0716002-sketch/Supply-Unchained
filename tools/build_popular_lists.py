@@ -80,10 +80,60 @@ def fetch_cargo(client: httpx.Client) -> tuple[str, list[str]]:
     return f"{url}?sort=downloads", list(dict.fromkeys(names))[:TARGET]
 
 
+def fetch_nuget(client: httpx.Client) -> tuple[str, list[str]]:
+    url = "https://azuresearch-usnc.nuget.org/query"
+    names: list[str] = []
+    for skip in range(0, TARGET, 100):
+        data = _get_json(client, url, {"q": "", "take": 100, "skip": skip})
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not rows:
+            break
+        names.extend(d["id"] for d in rows if isinstance(d, dict) and d.get("id"))
+        time.sleep(DELAY)
+    if not names:
+        raise SourceError(f"no packages returned from {url}")
+    return f"{url}?q=&take=100 (ordered by totalDownloads)", list(dict.fromkeys(names))[:TARGET]
+
+
+def fetch_composer(client: httpx.Client) -> tuple[str, list[str]]:
+    url = "https://packagist.org/explore/popular.json"
+    names: list[str] = []
+    for page in range(1, TARGET // 100 + 1):
+        data = _get_json(client, url, {"per_page": 100, "page": page})
+        pkgs = data.get("packages") if isinstance(data, dict) else None
+        if not pkgs:
+            break
+        names.extend(p["name"].lower() for p in pkgs if isinstance(p, dict) and p.get("name"))
+        time.sleep(DELAY)
+    if not names:
+        raise SourceError(f"no packages returned from {url}")
+    return f"{url}?per_page=100 (Packagist popularity ranking)", list(dict.fromkeys(names))[:TARGET]
+
+
+def fetch_rubygems(client: httpx.Client) -> tuple[str, list[str]]:
+    # The search endpoint ranks by downloads when the query is "*" (30 per page).
+    url = "https://rubygems.org/api/v1/search.json"
+    names: list[str] = []
+    for page in range(1, TARGET // 30 + 2):
+        data = _get_json(client, url, {"query": "*", "page": page})
+        if not isinstance(data, list) or not data:
+            break
+        names.extend(g["name"] for g in data if isinstance(g, dict) and g.get("name"))
+        if len(names) >= TARGET:
+            break
+        time.sleep(DELAY)
+    if not names:
+        raise SourceError(f"no gems returned from {url}")
+    return f"{url}?query=* (ordered by downloads)", list(dict.fromkeys(names))[:TARGET]
+
+
 FETCHERS = {
     "pip": fetch_pip,
     "npm": fetch_npm,
     "cargo": fetch_cargo,
+    "nuget": fetch_nuget,
+    "composer": fetch_composer,
+    "rubygems": fetch_rubygems,
 }
 
 
@@ -100,7 +150,9 @@ def write_list(eco: str, source: str, names: list[str]) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--only", choices=sorted(FETCHERS), help="build a single ecosystem")
     args = parser.parse_args(argv)
 
