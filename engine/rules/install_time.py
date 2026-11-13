@@ -47,6 +47,7 @@ from engine.rules.exec_scope import (
 RULE_INSTALL_TIME = "custom-install-time-exec"
 RULE_EXFIL = "custom-exfil-endpoint"
 RULE_INSTALL_SPAWN = "custom-install-time-spawn"
+RULE_INDIRECT_NET = "custom-install-time-network-indirect"
 
 #: detail 에서 "무엇을 했는가"와 "어디서 불렸는가"를 가르는 표식 (version_diff 가 쓴다)
 ORIGIN_MARK = "←"
@@ -213,11 +214,20 @@ def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
     """범위 안의 호출 중 (1) 네트워크 (2) 수상한 명령 실행을 HIGH 로, (3) 그 밖의 프로세스
     실행(평범한 빌드·조사 명령 제외)을 MEDIUM 으로.
 
+    확장 범위(다른 모듈 경유·인스턴스 메서드·스레드에 넘긴 함수·클래스 본문)에서만 닿은
+    **네트워크 호출**은 MEDIUM(``custom-install-time-network-indirect``)이다. 탈취 세트의 직전
+    정상 버전 16개 중 3개(litellm 1.82.6 의 import 시 모델 가격표 다운로드, elementary-data
+    0.23.2 의 최신 버전 확인, memoryos 2.0.33 의 설정 로드)와 정상 상위 300개 중 lxml(빌드
+    옵션에 따른 libxml2 다운로드 — setup.py 에서 두 모듈 건너)이 이 범위의 통신으로 HIGH 가
+    됐다. 새 릴리스에 처음 나타나면 version_diff 가 HIGH 로 올린다. 수상한 명령 실행은
+    정상 패키지에서 이 범위로 나온 적이 없어 HIGH 그대로다.
+
     다른 모듈에 있는 코드는 그 모듈 위치로 보고하고, 어디서 불렸는지를 ``←`` 뒤에 적는다.
     ``←`` 앞부분(무엇을 했는가)은 버전 비교(engine/version_diff.py)가 행위의 이름으로 쓴다.
     """
     seen: set[tuple[str, int, str]] = set()
-    for r in reached:
+    # 같은 줄에 예전 범위로도 닿았으면 그쪽(HIGH)을 먼저 본다
+    for r in sorted(reached, key=lambda r: r.indirect):
         node = r.node
         if not isinstance(node, ast.Call):
             continue
@@ -238,10 +248,17 @@ def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
             continue
         seen.add(key)
         plain = what.startswith("프로세스 실행")
+        indirect_net = r.indirect and what.startswith("네트워크 호출")
+        if indirect_net:
+            rule, cwe, sev = RULE_INDIRECT_NET, "CWE-506", Severity.MEDIUM
+        elif plain:
+            rule, cwe, sev = RULE_INSTALL_SPAWN, "CWE-78", Severity.MEDIUM
+        else:
+            rule, cwe, sev = RULE_INSTALL_TIME, "CWE-506", Severity.HIGH
         yield make_finding(
-            rule=RULE_INSTALL_SPAWN if plain else RULE_INSTALL_TIME,
-            cwe="CWE-78" if plain else "CWE-506",
-            severity=Severity.MEDIUM if plain else Severity.HIGH,
+            rule=rule,
+            cwe=cwe,
+            severity=sev,
             ctx=_ctx_for(r.module, ctx),
             line=node.lineno,
             detail=f"{when} {what}{_origin(r, seed)}",
@@ -308,8 +325,10 @@ def install_time_exec(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFind
     if _is_install_script(ctx):
         index, seed = _seed_module(ctx, tree)
         # setup.py 범위 안의 import 는 그 로컬 모듈 최상단을 이번에 처음 실행시킨다
-        top = Scope(index, import_toplevel=True).run(
-            seed, list(module_level(tree, include_main=True)))
+        top_scope = Scope(index, import_toplevel=True)
+        top_scope.run(seed, list(module_level(tree, include_main=True, definitions=False)))
+        top = top_scope.run(seed, list(module_level(tree, include_main=True, statements=False)),
+                            indirect=True)
         yield from _check(_split(top, seed, True), ctx,
                           "pip install 시 setup.py 가 실행하는", seed=seed)
         yield from _check(_split(top, seed, False), ctx,
@@ -325,7 +344,11 @@ def install_time_exec(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFind
     if not _is_package_module(ctx):
         return
     index, seed = _seed_module(ctx, tree)
-    reached = Scope(index).run(seed, list(module_level(tree, include_main=False)))
+    scope = Scope(index)
+    scope.run(seed, list(module_level(tree, include_main=False, definitions=False)))
+    # 정의 시점 코드(클래스 본문·데코레이터)는 확장 범위다
+    reached = scope.run(seed, list(module_level(tree, include_main=False, statements=False)),
+                        indirect=True)
     yield from _check(reached, ctx, "import 시점에 실행되는", seed=seed)
 
 

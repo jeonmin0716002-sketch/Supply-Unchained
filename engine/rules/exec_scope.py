@@ -100,13 +100,16 @@ def definition_time(node: ast.AST) -> Iterator[ast.AST]:
                 yield from walk_executed(stmt)
 
 
-def module_level(tree: ast.Module, *, include_main: bool) -> Iterator[ast.AST]:
-    """import(또는 setup.py 실행) 순간 도는 최상단 코드."""
+def module_level(tree: ast.Module, *, include_main: bool,
+                 definitions: bool = True, statements: bool = True) -> Iterator[ast.AST]:
+    """import(또는 setup.py 실행) 순간 도는 최상단 코드. ``definitions`` 는 def·class 의 정의
+    시점 코드(클래스 본문·데코레이터·기본 인자), ``statements`` 는 그 밖의 최상단 문장."""
     for stmt in tree.body:
         if isinstance(stmt, (*_FUNCS, ast.ClassDef)):
-            yield from definition_time(stmt)
+            if definitions:
+                yield from definition_time(stmt)
             continue
-        if not include_main and is_main_guard(stmt):
+        if not statements or (not include_main and is_main_guard(stmt)):
             continue
         yield from walk_executed(stmt)
 
@@ -266,6 +269,10 @@ class Reached:
     module: Module
     node: ast.AST
     via_thread: bool = False
+    #: 예전 범위(최상단 + 같은 파일 함수 호출, setup.py 는 로컬 모듈 1단계) 밖에서 닿았는가.
+    #: 정상 패키지도 이 확장 범위에서 import 시 통신한다 (litellm: 모델 가격표, elementary:
+    #: 최신 버전 확인 — 탈취 세트의 직전 정상 버전 16개 중 3개). 규칙이 심각도를 가른다.
+    indirect: bool = False
 
 
 _Target = tuple[Module, ast.AST]  # (정의가 있는 모듈, FunctionDef | ClassDef | Lambda)
@@ -281,7 +288,8 @@ class Scope:
     def __init__(self, index: ModuleIndex, *, import_toplevel: bool = False) -> None:
         self.index = index
         self.import_toplevel = import_toplevel
-        self._done: set[tuple[str, int]] = set()
+        self._done: set[tuple[str, int, bool]] = set()
+        self._seed: Module | None = None
         self._followed = 0
         self.reached: list[Reached] = []
 
@@ -432,22 +440,25 @@ class Scope:
 
     # 범위 확장 -----------------------------------------------------
 
-    def run(self, mod: Module, nodes: Iterable[ast.AST], *,
-            cls: _Target | None = None, via_thread: bool = False) -> list[Reached]:
-        todo: list[tuple[Module, list[ast.AST], _Target | None, bool]] = [
-            (mod, list(nodes), cls, via_thread)
+    def run(self, mod: Module, nodes: Iterable[ast.AST], *, cls: _Target | None = None,
+            via_thread: bool = False, indirect: bool = False) -> list[Reached]:
+        if self._seed is None:
+            self._seed = mod
+        todo: list[tuple[Module, list[ast.AST], _Target | None, bool, bool]] = [
+            (mod, list(nodes), cls, via_thread, indirect)
         ]
         while todo:
-            m, body, owner, threaded = todo.pop()
+            m, body, owner, threaded, ind = todo.pop()
             env = self._assigned_instances(m, body)
             for node in body:
-                self.reached.append(Reached(m, node, threaded))
+                self.reached.append(Reached(m, node, threaded, ind))
                 if isinstance(node, ast.Call):
                     for tm, tdef in self._callable_targets(m, node.func, env, owner):
-                        self._enqueue(todo, tm, tdef, threaded)
+                        direct = self._direct_edge(m, tm, tdef)
+                        self._enqueue(todo, tm, tdef, threaded, ind or not direct)
                     for arg in self._runner_args(m, node):
                         for tm, tdef in self._callable_targets(m, arg, env, owner):
-                            self._enqueue(todo, tm, tdef, True)
+                            self._enqueue(todo, tm, tdef, True, True)
                 elif isinstance(node, (*_FUNCS, ast.ClassDef)):
                     # 데코레이터는 정의 순간 그 함수를 인자로 불린다. ``@atexit.register`` 는
                     # 함수를 종료 시 실행되게 등록한다.
@@ -455,21 +466,36 @@ class Scope:
                         if isinstance(d, ast.Call):
                             continue  # 호출식 데코레이터는 Call 노드로 이미 처리된다
                         if resolve_name(d, m.aliases) == "atexit.register":
-                            self._enqueue(todo, m, node, True)
+                            self._enqueue(todo, m, node, True, True)
                         for tm, tdef in self._callable_targets(m, d, env, owner):
-                            self._enqueue(todo, tm, tdef, threaded)
+                            self._enqueue(todo, tm, tdef, threaded, True)
                 elif self.import_toplevel and isinstance(node, (ast.Import, ast.ImportFrom)):
                     for sub in self._imported_modules(m, node):
-                        key = (sub.relpath, 0)
+                        key = (sub.relpath, 0, ind)
                         if key not in self._done:
                             self._done.add(key)
+                            # setup.py 가 직접 import 한 로컬 모듈의 최상단은 예전 범위다
+                            sub_ind = ind or m is not self._seed
                             todo.append((sub, list(module_level(sub.tree, include_main=False)),
-                                         None, threaded))
+                                         None, threaded, sub_ind))
         return self.reached
 
-    def _enqueue(self, todo: list, mod: Module, fn: ast.AST, threaded: bool) -> None:
-        key = (mod.relpath, id(fn))
-        if key in self._done or self._followed >= MAX_FOLLOWED_DEFS:
+    def _direct_edge(self, src: Module, dst: Module, fn: ast.AST) -> bool:
+        """예전 범위의 연결인가 — 같은 파일 최상위 함수 호출, 또는 setup.py 가 로컬 모듈의
+        최상위 함수를 부름. 메서드·생성자·람다·다른 모듈 경유는 확장 범위다."""
+        if not isinstance(fn, _FUNCS) or _owners(dst).get(id(fn)) is not None:
+            return False
+        if dst is src:
+            return True
+        return self.import_toplevel and src is self._seed
+
+    def _enqueue(self, todo: list, mod: Module, fn: ast.AST, threaded: bool,
+                 indirect: bool) -> None:
+        # 확장 범위로 먼저 닿은 함수도 예전 범위로 다시 닿으면 한 번 더 본다 (심각도가 다르다)
+        key = (mod.relpath, id(fn), indirect)
+        if key in self._done or (mod.relpath, id(fn), False) in self._done:
+            return
+        if self._followed >= MAX_FOLLOWED_DEFS:
             return
         self._done.add(key)
         self._followed += 1
@@ -477,7 +503,7 @@ class Scope:
         if isinstance(fn, _FUNCS):  # 메서드면 self 해석용으로 소유 클래스를 찾는다
             cls = _owners(mod).get(id(fn))
             owner = (mod, cls) if cls is not None else None
-        todo.append((mod, body_nodes(fn), owner, threaded))
+        todo.append((mod, body_nodes(fn), owner, threaded, indirect))
 
     def _imported_modules(self, mod: Module, node: ast.Import | ast.ImportFrom) -> list[Module]:
         names: list[str] = []

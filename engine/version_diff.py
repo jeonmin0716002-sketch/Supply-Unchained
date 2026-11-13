@@ -38,7 +38,12 @@ from tempfile import TemporaryDirectory
 from api.schemas import Severity, StaticFinding
 from common.archive import extract_archive
 from common.pypi import PackageContext, ProjectData, PyPIError, download, select_artifact
-from engine.rules.install_time import ORIGIN_MARK, RULE_INSTALL_SPAWN, RULE_INSTALL_TIME
+from engine.rules.install_time import (
+    ORIGIN_MARK,
+    RULE_INDIRECT_NET,
+    RULE_INSTALL_SPAWN,
+    RULE_INSTALL_TIME,
+)
 from engine.static_analyzer import analyze_path
 
 RULE_NEW_BEHAVIOR = "custom-new-behavior"
@@ -46,10 +51,10 @@ RULE_NEW_BEHAVIOR = "custom-new-behavior"
 #: 새로 나타나면 MEDIUM → HIGH 로 올리는 규칙. 정상 상위 패키지의 (최신, 직전) 쌍에서
 #: 새로 나타나는 비율을 재고 넣는다 (docs/eval/py-engine.md). ``custom-dangerous-call``
 #: (eval·exec·pickle 등)은 정상 릴리스에서도 자주 새로 생겨 여기 넣지 않았다.
-ESCALATE_WHEN_NEW: frozenset[str] = frozenset({RULE_INSTALL_SPAWN})
+ESCALATE_WHEN_NEW: frozenset[str] = frozenset({RULE_INSTALL_SPAWN, RULE_INDIRECT_NET})
 
 #: 행위 이름을 "무엇을 했는가"로 잡는 규칙 (파일 위치는 뺀다)
-_BY_WHAT = frozenset({RULE_INSTALL_TIME, RULE_INSTALL_SPAWN})
+_BY_WHAT = frozenset({RULE_INSTALL_TIME, RULE_INSTALL_SPAWN, RULE_INDIRECT_NET})
 _WHAT = re.compile(r"(?:네트워크 호출|수상한 명령 실행|프로세스 실행) .*")
 
 _HIGH = (Severity.HIGH, Severity.CRITICAL)
@@ -94,7 +99,7 @@ def new_behaviors(
         if f.severity in _HIGH:
             detail = f"직전 릴리스에 없던 고위험 행위가 이번 릴리스에 처음 나타남: {f.detail}"
         else:
-            detail = ("직전 릴리스에 없던 설치·import 시점 프로세스 실행이 이번 릴리스에 처음 "
+            detail = ("직전 릴리스에 없던 설치·import 시점 행위가 이번 릴리스에 처음 "
                       f"나타남 — 계정 탈취로 끼워 넣은 코드의 전형: {f.detail}")
         out.append(StaticFinding(rule=RULE_NEW_BEHAVIOR, cwe=f.cwe, severity=Severity.HIGH,
                                  location=f.location, detail=detail))

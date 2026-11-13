@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 
 from api.schemas import ScanRequest, Severity, StaticFinding
 from common.pypi import PackageContext
-from engine.rules import AST_RULES, FILE_RULES, ONE_PER_LOCATION, FileContext
+from engine.rules import AST_RULES, FILE_RULES, ONE_PER_LOCATION, SAME_BEHAVIOR, FileContext
 from engine.rules.base import DiskTree, MemoryTree, SourceTree
 from engine.rules.exec_scope import ModuleIndex
 
@@ -170,7 +170,7 @@ def _one_per_location(findings: list[StaticFinding]) -> list[StaticFinding]:
     out = []
     for f in findings:
         if f.rule in ONE_PER_LOCATION:
-            key = (f.rule, f.location)
+            key = (SAME_BEHAVIOR.get(f.rule, f.rule), f.location)
             if key in seen:
                 continue
             seen.add(key)

@@ -25,6 +25,7 @@ from engine.rules.install_hooks import RULE_INSTALL_HOOK, RULE_PTH
 from engine.rules.install_time import (
     RULE_ENTRYPOINT,
     RULE_EXFIL,
+    RULE_INDIRECT_NET,
     RULE_INSTALL_SPAWN,
     RULE_INSTALL_TIME,
 )
@@ -58,6 +59,12 @@ RULE_CATALOG: dict[str, RuleInfo] = {
     RULE_INSTALL_TIME: RuleInfo(
         rule_id=RULE_INSTALL_TIME,
         summary="network call or suspicious command run by install-/import-time code",
+        cwes=frozenset({"CWE-506"}),
+    ),
+    RULE_INDIRECT_NET: RuleInfo(
+        rule_id=RULE_INDIRECT_NET,
+        summary="network call reached only through the extended import-time scope (other "
+                "modules, instances, threads, class bodies); HIGH via version_diff when new",
         cwes=frozenset({"CWE-506"}),
     ),
     RULE_INSTALL_SPAWN: RuleInfo(
