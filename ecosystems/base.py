@@ -177,11 +177,11 @@ class Ecosystem(ABC):
 
     def validate(self, name: str, version: str) -> None:
         """잘못된 이름·버전이면 ValueError. URL·파일 경로를 조립하기 전에 반드시 통과시킨다."""
-        if not (0 < len(name) <= self.MAX_NAME_LEN) or not self.NAME_RE.match(name):
+        if not (0 < len(name) <= self.MAX_NAME_LEN) or not self.NAME_RE.fullmatch(name):
             raise ValueError(f"{self.registry_label} 패키지명으로 쓸 수 없는 값: {name!r}")
         if ".." in name or ".." in version:
             raise ValueError("이름·버전에 '..' 는 쓸 수 없습니다")
-        if not (0 < len(version) <= self.MAX_VERSION_LEN) or not self.VERSION_RE.match(version):
+        if not (0 < len(version) <= self.MAX_VERSION_LEN) or not self.VERSION_RE.fullmatch(version):
             raise ValueError(f"{self.registry_label} 버전으로 쓸 수 없는 값: {version!r}")
 
     def normalize_name(self, name: str) -> str:
@@ -246,6 +246,11 @@ class Ecosystem(ABC):
         return typosquat_score(name, popular=self.popular_names())
 
     # ── 의존성 파일 ───────────────────────────────────────────────
+
+    def handles_filename(self, filename: str) -> bool:
+        """이 파일을 ``parse_manifest`` 가 읽을 수 있는가. 이름이 고정이 아닌 manifest
+        (``*.csproj``)가 있는 생태계는 덮어쓴다."""
+        return filename.lower() in {f.lower() for f in self.manifest_filenames}
 
     def parse_manifest(self, filename: str, text: str) -> list[Dependency]:
         """``manifest_filenames`` 중 하나의 내용 → 의존성 목록. 깨진 파일은 ValueError."""

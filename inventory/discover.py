@@ -70,7 +70,9 @@ def discover(root: str | Path) -> Discovery:
     for directory, files in walk:
         by_eco: dict[str, list[tuple[str, ecosystems.Ecosystem]]] = {}
         for fn in sorted(files):
-            for eco in names.get(fn.lower(), []):
+            for eco in ecos:
+                if not (eco in names.get(fn.lower(), ()) or eco.handles_filename(fn)):
+                    continue
                 by_eco.setdefault(eco.id, []).append((fn, eco))
         for _eco_id, cands in by_eco.items():
             has_lock = any(_is_lock(fn.lower()) for fn, _ in cands)

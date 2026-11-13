@@ -197,3 +197,8 @@ async def match_package(
         ecosystem=req.ecosystem,
         client=client,
     )
+
+
+#: 일괄 조회(inventory.osv_batch)가 같은 파싱을 쓴다 — 공개 이름.
+parse_severity = _parse_severity
+parse_fixed_version = _parse_fixed_version

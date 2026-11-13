@@ -43,12 +43,12 @@ class PipEcosystem(Ecosystem):
 
     def validate(self, name: str, version: str) -> None:
         # 문구는 어댑터 도입 전 api/schemas.py 의 것 그대로 (CLI 가 사용자에게 그대로 보인다)
-        if not (0 < len(name) <= self.MAX_NAME_LEN) or not self.NAME_RE.match(name):
+        if not (0 < len(name) <= self.MAX_NAME_LEN) or not self.NAME_RE.fullmatch(name):
             raise ValueError(
                 "패키지명은 영숫자로 시작·끝나고 중간에 . _ - 만 쓸 수 있습니다 "
                 "(PEP 503 — Command Injection 방지)"
             )
-        if not (0 < len(version) <= self.MAX_VERSION_LEN) or not self.VERSION_RE.match(version):
+        if not (0 < len(version) <= self.MAX_VERSION_LEN) or not self.VERSION_RE.fullmatch(version):
             raise ValueError("버전은 영숫자와 . _ + ! - 만 쓸 수 있습니다 (PEP 440 문자셋)")
 
     def normalize_name(self, name: str) -> str:

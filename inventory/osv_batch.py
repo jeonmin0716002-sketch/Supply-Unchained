@@ -13,7 +13,8 @@ from typing import Any
 import httpx
 
 from api.schemas import Severity
-from engine.cve_matcher import _parse_fixed_version, _parse_severity
+from engine.cve_matcher import parse_fixed_version as _parse_fixed_version
+from engine.cve_matcher import parse_severity as _parse_severity
 
 BATCH_URL = "https://api.osv.dev/v1/querybatch"
 VULN_URL = "https://api.osv.dev/v1/vulns/"
