@@ -87,14 +87,14 @@ PyPI 에서 프로젝트가 지워져 비교 불가(원래 `.pth` 로 차단).
 **어떤 규칙을 승격 대상에 넣을지**는 정상 쌍에서 쟀다(§4): `custom-dangerous-call`(eval·exec·pickle)은
 최신 릴리스에서 새로 나타나는 일이 잦아 넣지 않았다.
 
-### 2.4 콘솔 스크립트 진입점 (`custom-entrypoint-exec`)
+### 2.4 콘솔 스크립트 진입점 (`custom-entrypoint-exec`) — 결국 MEDIUM
 
 진입점 함수는 사용자가 명령을 직접 실행할 때 돌고, 거기서 네트워크는 정상이다. 수상한 명령(숨김
-PowerShell·`| sh`·인코딩 명령 등)만 HIGH. **악성 세 세트 900개에서 이 규칙이 새로 잡은 것은 0개**였다 —
-악성 패키지는 진입점이 아니라 설치·import 시점을 쓴다. 정상 쪽에서는 ultralytics 의 `yolo` 명령이
-내려받기 재시도에 `curl` 을 써서 걸렸고(아래 §3), 다운로드 도구만 있는 경우는 제외했다. 실익이 측정되지
-않았으므로 통합 때 끄는 것도 합리적이다 — 남겨 둔 이유는 진입점 함수의 숨김 PowerShell 은 정상
-상위 300개에서 0건이라 비용이 없어서다.
+PowerShell·`| sh`·인코딩 명령 등)만 보고한다. **악성 세 세트 900개와 탈취 29개에서 이 규칙이 새로 잡은
+것은 0개**였다 — 악성 패키지는 진입점이 아니라 설치·import 시점을 쓴다. 처음엔 HIGH 였지만 오탐이
+났다: ultralytics 의 `yolo` 명령이 내려받기 재시도에 `curl` 을 쓰고(다운로드 도구만 있으면 제외로 처리),
+신규 업로드에서는 seleniumbase·trqsh·squidbrake 의 정상 PowerShell 호출, pyft8 의 `CREATE_NO_WINDOW`,
+pigeon-home-runner 설치 마법사의 crontab 등록이 걸렸다(§7). 탐지 이득 없이 오탐만 늘려 MEDIUM 으로 내렸다.
 
 ### 2.5 2MB 넘는 .py 모듈 사각지대 (`engine/static_analyzer.py`)
 
@@ -162,3 +162,61 @@ dangerous-call·install-hook 을 넣었다면 정상 상위 패키지의 약 9%�
 * 범위 추적은 정의 400개에서 멈춘다(`MAX_FOLLOWED_DEFS`). 실측 악성 경로는 깊이 4 이내였다.
 * 측정 환경: Windows, 악성 샘플은 메모리에서만 읽음, 직전 정상 릴리스와 정상 상위 패키지는 디스크에 풀어
   분석. 정상 평가의 오류 9개는 기존과 같은 아카이브 상한(30MB·멤버 5000) 초과다 — "못 봄"이지 "깨끗함"이 아니다.
+
+## 7. 신규 업로드 오탐 제안 반영 (docs/eval/watch-new-uploads.md §3) — 2026-11-13 2차
+
+통합 브랜치(`feat/multi-ecosystem`, bd3c15f)를 병합한 뒤, 감시기가 실제로 본 신규 업로드 재스캔에서 나온
+규칙 변경안을 반영했다. 감시기 DB 는 원본을 읽기 전용(`mode=ro`)으로 열어 SQLite 백업 API 로 사본을 만들고
+사본만 읽었다. 표본 시드 20261113 (watch-dash 와 같음).
+
+### 7.1 전 → 후
+
+| 지표 | watch-dash 측정 (브랜치 시점 엔진) | 병합 직후 (bd3c15f) | **후 (1e76210)** |
+|---|---|---|---|
+| 신규 업로드 — 예전 block 74건 재스캔에서 지금도 block | 50/71 | 60/72 (83%) | **21/72** (29%, 19.9–40.5) |
+| 신규 업로드 — 무작위 500 표본 block | 3/486 (0.62%) | 5/490 (1.0%, 0.44–2.37) | **1/491 (0.20%, 0.04–1.14)** |
+| 악성 최종 (seed 99) | — | 81.0% (243/300) | **81.0%** (243/300) |
+| 악성 held-out (seed 7) / 튜닝 (seed 42) | — | 86.0% / 80.3% | 86.0% / 80.3% |
+| 탈취 — 끼워 넣은 코드로 잡음 / 직전 비교 포함 차단 | — | 24/28 / 27/29 | 24/28 / 27/29 |
+| 정상 상위 300 차단 | — | 2/291 (a4f4d1e) | **2/299 (0.7%)** — urllib3·coverage |
+| 정상 상위 300 — 직전 비교로 새로 차단 | — | 0/291 | **0/299** (후보 25개만 직전 릴리스 다운로드) |
+
+병합 직후 값이 watch-dash 측정보다 나쁜 것은 py-engine 1차의 `custom-entrypoint-exec`(HIGH) 때문이다 —
+예전 block 재스캔에서 76건 발생, 표본에서 4건. 아래 7.2 의 마지막 항목으로 해소.
+
+정상 상위 300 은 통합된 core-pipeline 의 상한 변경(100MB·선택 추출)으로 이제 거의 전부 분석된다(오류 1 —
+mypy 메타데이터 조회 일시 실패). 새로 분석된 matplotlib 3.11.2 가 한때 차단됐다(7.2).
+
+### 7.2 반영한 것 (커밋별, 각 변경 후 악성 4세트 재측정 — 모두 차단 수 변화 0)
+
+| 제안 | 변경 | 해소한 오탐 |
+|---|---|---|
+| P2 `.pth` 자기 모듈 import | 문장이 자기 모듈 import·경로 추가(`sys.path.insert` 등)·자기 모듈 함수 호출뿐이고, import 하는 모듈과 부르는 함수(재수출까지 풀어 범위 추적)에 HIGH·네트워크·프로세스·실행 싱크·디코더가 없으면 MEDIUM. 그 모듈은 위치와 무관하게 import 시점 검사 대상 | dagz 7·doeff-hy·quantark·triton-utlx-rocm (gammonview-helper 는 표본에서) |
+| P1 버전 확인 | 목적지가 상수 `pypi.org`·`localhost`·`127.0.0.1` (변수면 그 이름의 모든 대입이 그래야 함) → MEDIUM | rubka·sigmaflow |
+| P1 setup.py 다운로드 | `urlretrieve(url, 파일)` 이고 같은 설치 범위에 파일을 실행할 수 있는 호출(spawn·exec·startfile·chmod·ctypes)이 없고, 주소를 조립하지 않았고, 저장 경로가 실행 파일·시작 프로그램 폴더가 아니면 MEDIUM | ai-edge-litert-sdk-* 9릴리스 |
+| P3 자기 라이브러리 blob | `exec(<해독 체인>, <모듈>.__dict__)` 일 때만 실행 없이 해독(base64 계열·zlib·lzma·bz2, 8MB 상한)해 "import 되는 모듈"로 다시 분석, 최상단이 조용하면 MEDIUM | hpcp 5·statblk·statbtrfs |
+| P4 설치 훅 | 훅 안 싱크가 `urlretrieve` 뿐이면 `custom-install-hook` MEDIUM | (haddock3 대상이었으나 아래 이유로 남음) |
+| (측정에서 나온 것) URL/파일 도우미 | 같은 변수의 `startswith(("http://", …))` 분기 안의 통신 → MEDIUM | matplotlib 3.11.2 (정상 상위 300) |
+| (측정에서 나온 것) 진입점 규칙 | `custom-entrypoint-exec` HIGH → MEDIUM (§2.4) | seleniumbase·trqsh·squidbrake·pyft8·pigeon-home-runner 9 |
+
+triage 문서의 서술과 실제 코드가 달랐던 곳이 있어 첫 적용으로는 일부만 풀렸다: `.pth` 는 "import 한 줄"이 아니라
+`import X; X.func()`·`sys.path.insert(...)` 였고, 버전 확인 URL 은 지역 변수를 거쳤고, hpcp 의 blob 은
+`.decode("utf-8")` 로 끝나며 상수가 블록 안에서 대입됐다. 실제 릴리스를 내려받아(실행 없이) 확인한 뒤 맞췄다.
+
+### 7.3 하지 않은 것 / 남긴 것과 이유
+
+* **"try/except 로 실패를 삼키는 GET 은 MEDIUM" — 하지 않음.** 실측 악성 esq* 계열이 setup.py 의 숨김
+  PowerShell 을 바로 `try: ... except: pass` 로 감싼다(`tests/test_engine.py` 고정 픽스처). 비용이 탐지율이다.
+* **`raw.githubusercontent.com` 을 정상 목적지로 — 하지 않음.** 악성 2단계 페이로드를 두는 흔한 곳이다.
+  그래서 meerschaum 2(typing_extensions 대체 경로)는 block 으로 남는다.
+* **`urlopen`·`requests.get` 다운로드를 MEDIUM 으로 — 하지 않음.** 상수 주소에 GET 만 해도 의존성 혼동 PoC 의
+  비콘(설치한 곳의 IP 유출)이다. 그래서 chromedriver-binary 3 은 남는다.
+* **haddock3 는 남김(의도).** 설치 훅이 실행 파일을 내려받아 `os.chmod(executable, 0o755)` 하고 다른 훅에서
+  subprocess 를 돌린다 — "받아서 실행 권한 주기"는 정확히 악성이 쓰는 형태라 HIGH 가 맞다.
+* **nvidia-cutlass-dsl 은 남김(의도).** `.pth` 가 import 하는 `nvidia_cutlass_dsl` 이 그 휠에 없다(다른 배포물이
+  제공) — 같은 배포물에 없는 모듈을 시작 시 띄우는 것은 제안서의 HIGH 유지 조건이다.
+* 함수 안 통신이라 "import 시점"이 아니라는 지적(agentwire-dev·fiberbrowser·sr-harness·chatsorter-local·
+  trading-matrix-dashboard·radboy·ultralytics): 이들은 모듈 최상단에서 **같은 파일 함수를 불러** 닿는 예전 범위의
+  통신이라 실제로 import 시점에 돈다(범위 추적은 정확했다). 목적지가 정상 서비스라는 것은 정적으로 가를 근거가
+  없어 남겼다 — 남은 21릴리스 중 15가 이 유형이다. 신규 업로드 무작위 표본의 유일한 block(hopsworks 4.6.8,
+  import 시 사용 통계 전송)도 같다.
