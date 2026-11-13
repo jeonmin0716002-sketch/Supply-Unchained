@@ -1,0 +1,10 @@
+{
+  "name": "su-fixture-binary-fetcher",
+  "version": "1.0.0",
+  "description": "Harmless fixture: postinstall downloads a platform binary (esbuild/sharp shape). Must not be HIGH.",
+  "main": "lib/index.js",
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "license": "MIT"
+}
