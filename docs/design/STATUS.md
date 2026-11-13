@@ -1,7 +1,7 @@
 # 다중 생태계 확장 — 진행 상태 (2026-11-13 중단 시점)
 
 브랜치 `feat/multi-ecosystem`. 설계는 [multi-ecosystem.md](multi-ecosystem.md).
-`uv run ruff check .` 통과, `uv run pytest -q` 837 통과 · 1 건너뜀(Windows 심볼릭 링크).
+`uv run ruff check .` 통과, `uv run pytest -q` 856 통과 · 1 건너뜀(Windows 심볼릭 링크).
 `main` 에는 병합하지 않았다.
 
 ## 들어간 것
@@ -22,10 +22,13 @@
 
 1. **파이썬 엔진 실측 문서** — 세션이 정상 상위 300개 오탐률을 재던 중 중단. `docs/eval/py-engine.md` 없음.
    새 규칙이 탐지율·오탐률을 어떻게 바꿨는지 숫자가 아직 없다. README 의 80.7% · 62% · 0.7% 는 이전 엔진 값이다.
-2. **신규 업로드 오탐률 재측정** — `tools/eval_new_uploads.py` 는 있음. 실행 결과와
-   `docs/eval/watch-new-uploads.md`(분류표)는 없음.
-3. **인기 패키지 목록** — pip · npm · cargo 만 있음. go · maven · rubygems · nuget · composer 는 없어서
-   그 생태계의 이름 사칭 점수는 0 이다.
+2. **신규 업로드 오탐률 재측정 — 완료.** [docs/eval/watch-new-uploads.md](../eval/watch-new-uploads.md):
+   감시기가 본 릴리스 무작위 500개 중 block 3건 = 0.62% (95% CI 0.21–1.8%), 셋 다 오탐으로 분류.
+   예전에 block 이던 74건 중 50건(27개 패키지)이 지금도 block 이고 악성 가능성은 0건으로 봤다.
+   문서 끝의 규칙 수정 제안(자기 모듈만 import 하는 `.pth`, 설치 중 바이너리 내려받기 등)은 **아직 엔진에 반영 안 함**.
+   이 측정은 py-engine 수정 전 엔진 기준이다.
+3. **인기 패키지 목록** — pip · npm · cargo · nuget · composer · rubygems 있음. go · maven 은 순위를 주는
+   공개 출처를 찾지 못해 없다 → 두 생태계의 이름 사칭 점수는 0 이다.
 4. **연결 안 된 것** — `cli watch --ecosystems` 옵션(감시기는 준비됨, CLI 미연결),
    `engine.version_diff` 가 sdist + wheel 다중 아티팩트를 직전 릴리스에도 적용하는 것.
 5. **측정 안 한 것** — cargo · go · maven · nuget · rubygems · composer 규칙의 악성 샘플 탐지율,
