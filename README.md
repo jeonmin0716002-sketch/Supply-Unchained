@@ -2,9 +2,9 @@
 
 # Supply-Unchained
 
-pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위험도 스코어링을 결합해,
+오픈소스 패키지를 설치하기 전에 CVE/OSV 취약점 탐지 · 정적분석 · 위험도 스코어링을 결합해,
 알려진 취약점은 물론 아직 CVE가 없는 신종 악성 패키지까지 사전에 걸러내는
-오픈소스 공급망 보안 시스템.
+오픈소스 공급망 보안 시스템. pip · npm · cargo · Go · Maven · RubyGems · NuGet · Composer 를 지원한다.
 
 [![CI](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/ci.yml/badge.svg)](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/ci.yml)
 [![Supply-Chain Scan](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/supply-chain-scan.yml/badge.svg)](https://github.com/jeonmin0716002-sketch/Supply-Unchained/actions/workflows/supply-chain-scan.yml)
@@ -35,9 +35,45 @@ pip 패키지 설치 시점에 CVE/OSV 취약점 탐지 · 정적분석 · 위�
 | CI 2종 (테스트 + 공급망 스캔 게이트) | 동작 |
 | 컨테이너 이미지 배포 (GHCR, `docker-publish.yml`) | 동작 |
 | PyPI 감시기 — 신규 업로드 자동 스캔 + 검토 큐 (`watcher/`, `su_scan watch`) | 동작 |
-| 실측 평가 — 처음 보는 실제 악성 300개 탐지율 80.7% · 탈취 패키지 29개 62% · 정상 상위 300개 오탐률 0.7% (`tools/eval_*.py`) | 동작 |
+| 실측 평가 — 탐지율·오탐률 (`tools/eval_*.py`, 아래 "탐지 성능") | 동작 |
+| 생태계 어댑터 8종 — pip · npm · cargo · go · maven · rubygems · nuget · composer (`ecosystems/`) | 동작 |
+| 프로젝트·SBOM 스캔 — 모든 lockfile 을 읽어 일괄 판정, CycloneDX 입출력 (`inventory/`, `su-scan project`) | 동작 |
+| npm 레지스트리 프록시 — `npm install` 을 설치 전에 가로채 스캔 (`api/routers/npm_proxy.py`) | 동작 |
+| GitHub Action · pre-commit 훅 (`action.yml`, `.pre-commit-hooks.yaml`) | 작성됨 (GitHub 에서 실행해 보지 않음) |
 
 임계값·규칙셋은 검증 샘플로 계속 튜닝 중입니다.
+
+### 지원 생태계
+
+| 생태계 | 레지스트리 | 규칙이 보는 자동 실행 경로 | 실측 |
+|---|---|---|---|
+| pip | PyPI | `setup.py`, `.pth`, import 시 모듈 최상단, 직전 릴리스 대비 새 행위 | 탐지율·오탐률 (아래) |
+| npm | npm | `preinstall`·`install`·`postinstall`, `binding.gyp`, 진입점 최상단 | 탐지율 52.0% · 오탐 0/300 ([docs/eval/npm.md](docs/eval/npm.md)) |
+| cargo | crates.io | `build.rs`, proc-macro | 인기 60개 오탐 0 (탐지율 미측정) |
+| go | Go module proxy | `init()`, 패키지 변수 초기화, cgo 지시문 | 인기 패키지 소수만 확인 (탐지율 미측정) |
+| maven | Maven Central | 매니페스트의 Java agent, annotation processor, POM 빌드 플러그인, `.class` 상수 풀 | 인기 패키지 소수만 확인 (탐지율 미측정) |
+| rubygems | RubyGems | `extconf.rb`, `require` 시 최상단 | 인기 80개 오탐 0 (탐지율 미측정) |
+| nuget | NuGet | `tools/*.ps1`, `build/*.targets`·`.props` | 인기 60개 오탐 0 (탐지율 미측정) |
+| composer | Packagist | composer 플러그인, autoload `files` | 인기 60개 오탐 0 (탐지율 미측정) |
+
+파이썬은 `ast` 로, 나머지 언어는 파서 의존성 없이 어휘 수준(주석·문자열 처리, 함수 경계 추적)으로
+분석한다. 그래서 npm 이외의 새 생태계는 "인기 패키지를 막지 않는다"까지만 확인됐고, 실제 악성
+샘플을 얼마나 잡는지는 아직 재지 않았다. 알려진 취약점(OSV) 조회는 8종 모두 같다.
+
+```bash
+uv run python -m cli.su_scan check npm:lodash@4.17.21         # 생태계 접두사
+uv run python -m cli.su_scan check -e cargo serde@1.0.200
+uv run python -m cli.su_scan project .                         # 디렉터리의 모든 lockfile
+uv run python -m cli.su_scan project . --mode full --fail-on block
+uv run python -m cli.su_scan sbom bom.json --format cyclonedx --output scanned.json
+npm install --registry http://localhost:8000/npm/ <pkg>        # 서버를 띄운 뒤, 설치 전 스캔
+```
+
+`project` 의 기본(`fast`) 모드는 OSV 일괄 조회로 알려진 취약점만 본다. 정적분석까지 하려면
+`--mode full`. 버전이 못박히지 않은 의존성은 조용히 넘기지 않고 "검사하지 않음"으로 표시한다.
+자세한 사용법은 [docs/usage/project-scan.md](docs/usage/project-scan.md),
+[docs/usage/ci-integration.md](docs/usage/ci-integration.md), 구조는
+[docs/design/multi-ecosystem.md](docs/design/multi-ecosystem.md).
 
 ```bash
 # 바로 실행 — 빌드 없이 배포 이미지로
@@ -149,8 +185,8 @@ npm 등 확장을 대비했습니다.
 
 ```jsonc
 {
-  "ecosystem": "pip",      // Enum: pip (npm/cargo는 Future Work)
-  "name": "requests",      // 1~214자
+  "ecosystem": "pip",      // Enum: pip | npm | cargo | go | maven | rubygems | nuget | composer
+  "name": "requests",      // 생태계별 문법 (npm @scope/name, maven group:artifact, go 모듈 경로)
   "version": "2.31.0"      // 정확한 버전 문자열
 }
 ```
@@ -220,6 +256,19 @@ defense-in-depth 의 기본이라는 판단입니다(Command Injection 원천 �
 | 그 외 | `safe` |
 
 임계값(70 / 40)은 검증용 샘플로 튜닝 중입니다.
+
+**"못 봤다"는 "깨끗하다"가 아니다.** 정적분석을 끝까지 하지 못한 패키지(레지스트리에 없음,
+크기 상한 초과, 일부만 추출, 읽기 차단)는 `safe` 가 아니라 최소 `warn` 이고 사유가 붙는다.
+프록시는 그런 파일을 기본으로 내보내지 않는다 (`SU_UNSCANNED_POLICY=allow` 로 풀 수 있다).
+예전에는 파일 수를 5,000개 넘게 부풀리기만 하면 정적분석이 통째로 빠진 채 통과했다 —
+감시 16,000여 건 중 실제로 61건이 그 상한에 걸렸다. 지금은 분석기가 읽는 파일만 골라 풀고
+(선택 추출), 그래도 넘치면 설치·import 진입점부터 본 뒤 "일부만 봤다"고 보고한다.
+내려받는 파일 크기 상한은 `SU_MAX_ARTIFACT_MB`(기본 100).
+
+**스캔한 파일이 설치되는 파일이다.** 프록시는 pip·npm 이 요청한 바로 그 파일을 스캔한다.
+예전에는 wheel 을 요청해도 sdist 를 스캔해서, 깨끗한 sdist 와 악성 wheel 을 같이 올리면
+통과했다. CLI·API·감시기는 sdist 와 wheel 1개(순수 파이썬 wheel 우선)를 둘 다 본다 —
+플랫폼별 wheel 에만 심은 코드는 프록시를 거치지 않으면 보지 못한다.
 
 **`high` 를 아무 데나 쓰지 않는 이유:** 처음엔 `eval` · `exec` · `os.system` 을 전부
 high로 잡았다가, 실제 `requests` sdist를 스캔했더니 `block` 이 나왔습니다. 걸린 코드는
@@ -372,9 +421,14 @@ ultralytics 8.3.40 — import 시 인터넷 연결 확인(`socket.create_connect
 주기적으로 읽어, 처음 보는 `name==version` 만 통합 스캔에 태웁니다.
 
 ```bash
-uv run python -m cli.su_scan watch            # 5분 주기로 계속
+uv run python -m cli.su_scan watch            # 2분 주기로 계속 (PyPI)
 uv run python -m cli.su_scan watch --once     # 한 주기만
+uv run python -m cli.su_scan watch --ecosystems pip,npm,cargo,rubygems   # 여러 레지스트리
 ```
+
+피드가 있는 레지스트리(pip · npm · cargo · go · rubygems · nuget · composer)를 함께 감시할 수
+있고, 주기당 스캔 수는 생태계마다 따로 센다(바쁜 레지스트리가 나머지를 밀어내지 않게). Maven
+Central 은 신규 업로드를 최신순으로 주는 공개 엔드포인트가 없어 감시 대상이 아니다.
 
 * **설치·실행하지 않습니다.** 스캔 경로가 `run_scan` 그대로라 아카이브를 안전 추출해
   정적분석만 합니다. 하루 수천 건의 신뢰할 수 없는 업로드를 다루는 도구라 가장 중요한 원칙입니다.
@@ -485,7 +539,14 @@ Supply-Unchained/
 │       ├── proxy.py        #   pip 인덱스 프록시
 │       └── watch.py        #   감시기 검토 큐 API
 │
-├── common/pypi.py          # PyPI 조회 · 아카이브 다운로드 · 안전 추출
+├── common/                 # PackageContext(레지스트리 조회·다운로드) · 안전 추출
+│
+├── ecosystems/             # 생태계 어댑터 — 레지스트리·규칙·lockfile·피드
+│   ├── base.py             #   어댑터 계약 (Ecosystem · Project · Artifact · Dependency)
+│   ├── data/popular/       #   이름 사칭 비교 대상 목록
+│   └── pip/ npm/ cargo/ go/ maven/ rubygems/ nuget/ composer/
+│
+├── inventory/              # 프로젝트 디렉터리·SBOM → 의존성 목록 → 일괄 판정
 │
 ├── engine/                 # 탐지 엔진 (레이어 ①②)
 │   ├── cve_matcher.py      #   OSV.dev 연동

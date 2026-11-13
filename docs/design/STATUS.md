@@ -29,11 +29,14 @@
    이 측정은 py-engine 수정 전 엔진 기준이다.
 3. **인기 패키지 목록** — pip · npm · cargo · nuget · composer · rubygems 있음. go · maven 은 순위를 주는
    공개 출처를 찾지 못해 없다 → 두 생태계의 이름 사칭 점수는 0 이다.
-4. **연결 안 된 것** — `cli watch --ecosystems` 옵션(감시기는 준비됨, CLI 미연결),
-   `engine.version_diff` 가 sdist + wheel 다중 아티팩트를 직전 릴리스에도 적용하는 것.
-5. **측정 안 한 것** — cargo · go · maven · nuget · rubygems · composer 규칙의 악성 샘플 탐지율,
-   npm `compromised_lib`.
-6. **README** — 수치·구조 설명 갱신 전.
+4. **연결·확인 완료 (2026-11-14)** — `watch --ecosystems`·`crosscheck --ecosystem` 연결, pip·npm·cargo·rubygems
+   실제 한 주기 실행. 실제 `npm install --registry .../npm/` 로 스코프 패키지·전이 의존성 4개가 스캔 후 설치됨.
+   대시보드 화면 확인(콘솔 오류 없음). 차단 경로는 실제 악성 npm 패키지로 돌려보지 않았다(테스트만).
+5. **인기 패키지 오탐 확인** — rubygems 80 · cargo 60 · nuget 60 · composer 60 개에서 HIGH 0건
+   (rubygems 는 감시 첫 주기에서 나온 오탐 3종을 고친 뒤의 값). go · maven 은 인기 목록이 없어 소수만 확인.
+   **악성 샘플 탐지율은 npm 외 6종 모두 미측정.** npm `compromised_lib` 도 미측정.
+6. **README** — 구조·지원 생태계·판정 원칙 갱신. 파이썬 탐지율 수치는 py-engine 실측이 끝나면 교체.
+   `engine.version_diff` 는 직전 릴리스를 아티팩트 1개(sdist 우선)로만 비교한다.
 7. 설계 문서 §5 의 이후 과제(결과 캐시, 패키지 배포, 큐 API 인증, 대형 휠 부분 읽기).
 
 세션별 한계와 통합 요청 원문은 [integration-notes/](integration-notes/) 에 있다.
