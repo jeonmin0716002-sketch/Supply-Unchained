@@ -83,7 +83,7 @@ RULE_CATALOG: dict[str, RuleInfo] = {
     RULE_ENTRYPOINT: RuleInfo(
         rule_id=RULE_ENTRYPOINT,
         summary="suspicious command (hidden PowerShell, curl|sh ...) run by a console-script "
-                "entry point; plain network calls there are normal and not reported",
+                "entry point — context only (MEDIUM): 0 real-malware catches, new-upload FPs",
         cwes=frozenset({"CWE-506"}),
     ),
     RULE_EXFIL: RuleInfo(

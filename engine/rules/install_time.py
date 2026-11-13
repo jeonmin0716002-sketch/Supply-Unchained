@@ -475,9 +475,13 @@ def exfil_endpoint(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding
 # ── 콘솔 스크립트 진입점 ──────────────────────────────────────────
 # [project.scripts]·setup(entry_points=...)·entry_points.txt 의 함수는 사용자가 명령을
 # **직접 실행할 때** 돈다. CLI 가 네트워크를 쓰는 건 정상이라(다운로더·API 클라이언트)
-# 네트워크 호출은 보지 않는다. 수상한 명령 실행(숨김 PowerShell, curl|sh 등)만 HIGH 다 —
-# import 시점 규칙과 같은 토큰 목록이고, 정상 상위 300개에서 이 조합이 나온 패키지 수는
-# docs/eval/py-engine.md 에 있다.
+# 네트워크 호출은 보지 않는다. 수상한 명령 실행(숨김 PowerShell, curl|sh 등)만 남긴다.
+#
+# 처음엔 HIGH 였다가 MEDIUM 으로 내렸다 (docs/eval/py-engine.md §7). 실제 악성 900개
+# (튜닝·held-out·최종)와 탈취 29개에서 이 규칙으로 새로 잡은 것은 0개였고, 신규 업로드
+# 무작위 500개 표본에서는 차단을 3 → 5건(0.6 → 1.0%)으로 늘렸다 — seleniumbase·trqsh·
+# squidbrake 의 정상 PowerShell 호출, pyft8 GUI 의 CREATE_NO_WINDOW, pigeon-home-runner
+# 설치 마법사의 crontab 등록. CLI 는 사용자가 실행하는 도구라 이런 명령이 정상이다.
 
 RULE_ENTRYPOINT = "custom-entrypoint-exec"
 
@@ -582,7 +586,7 @@ def entrypoint_exec(ctx: FileContext) -> Iterable[StaticFinding]:
             seen.add((r.module.relpath, node.lineno))
             what = f"수상한 명령 실행 {_resolve(node.func, r.module.aliases)}() — '{token}'"
             yield make_finding(
-                rule=RULE_ENTRYPOINT, cwe="CWE-506", severity=Severity.HIGH,
+                rule=RULE_ENTRYPOINT, cwe="CWE-506", severity=Severity.MEDIUM,
                 ctx=_ctx_for(r.module, ctx), line=node.lineno,
                 detail=f"콘솔 명령 {modname}:{attr} 실행 시 {what} {ORIGIN_MARK} {ctx.relpath}",
             )

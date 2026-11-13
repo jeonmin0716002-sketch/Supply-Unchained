@@ -1212,10 +1212,11 @@ _PS = "import subprocess\ndef main():\n    subprocess.Popen('powershell -w hidde
          "p/__init__.py": "", "p/cli.py": _PS},
     ],
 )
-def test_entrypoint_running_suspicious_command_is_high(files):
+def test_entrypoint_running_suspicious_command_is_medium_context(files):
+    """사용자가 실행하는 CLI — 실제 악성 0건·신규 업로드 오탐 4건이라 정황(MEDIUM)으로만."""
     hits = [f for f in analyze_files({"p-1/PKG-INFO": "Name: p", **files})
             if f.rule == RULE_ENTRYPOINT]
-    assert len(hits) == 1 and hits[0].severity is Severity.HIGH
+    assert len(hits) == 1 and hits[0].severity is Severity.MEDIUM
     assert hits[0].location.endswith("p/cli.py:3")
 
 

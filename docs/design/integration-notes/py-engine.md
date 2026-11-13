@@ -43,7 +43,8 @@ if escalate_new_behaviors is not None:
 | `custom-install-time-spawn` | MEDIUM (홀로는 판정 불변) | CWE-78 |
 | `custom-install-time-network-indirect` | MEDIUM (확장 범위의 통신, 새로 나타나면 승격) | CWE-506 |
 | `custom-new-behavior` | HIGH (직전 릴리스에 없던 행위) | 원 finding 의 CWE |
-| `custom-entrypoint-exec` | HIGH (콘솔 명령이 수상한 명령 실행) | CWE-506 |
+| `custom-entrypoint-exec` | MEDIUM (콘솔 명령이 수상한 명령 실행 — 정황) | CWE-506 |
+| `custom-install-time-network-benign` | MEDIUM (PyPI·localhost 버전 확인, setup.py 의 받기만 하는 다운로드) | CWE-506 |
 
 `engine.verdict.RULE_CATALOG`·`KNOWN_CWES` 에 등록돼 있다.
 
