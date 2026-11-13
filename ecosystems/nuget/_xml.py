@@ -21,7 +21,11 @@ def parse_xml(text: str) -> ET.Element:
     if _DTD.search(text):
         raise ValueError("DOCTYPE/ENTITY 가 있는 XML 은 읽지 않습니다")
     try:
-        root = ET.fromstring(text.lstrip("﻿"))
+        # 억제 근거(B314): bandit 은 fromstring 호출만 보고 XML 공격을 경고한다. 엔티티 확장·외부
+        # 엔티티는 DTD 로만 정의할 수 있는데, 바로 위에서 DOCTYPE·ENTITY 가 있는 문서를 파싱 전에
+        # 거부하고 크기도 MAX_XML_CHARS 로 묶었다. defusedxml 을 들이지 않는 이유는
+        # watcher/feed.py 와 같다 — 의존성 하나보다 입구에서 잘라내는 쪽이 작다.
+        root = ET.fromstring(text.lstrip("﻿"))  # nosec B314
     except ET.ParseError as exc:
         raise ValueError(f"XML 파싱 실패: {exc}") from exc
     for el in root.iter():
