@@ -92,9 +92,21 @@ def _is_exec_sink(fn: ast.expr) -> bool:
     return False
 
 
+#: 받기만 하는 싱크 — 훅 안의 싱크가 이것뿐이면 "실행"이 아니다. 신규 업로드 실측 오탐
+#: haddock3 가 install 훅에서 데이터 파일을 재시도하며 내려받았다(docs/eval/watch-new-uploads.md
+#: §P4). install_time 의 "받기만 하는 다운로드" 기준(urlretrieve)과 같다.
+_DOWNLOAD_ONLY_SINKS = {"urlretrieve"}
+
+
+def _sink_name(fn: ast.expr) -> str:
+    return fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+
+
 def _calls_exec_sink(node: ast.AST) -> bool:
-    """서브트리 안에서 실행·네트워크 싱크 호출이 보이면 True."""
-    return any(isinstance(sub, ast.Call) and _is_exec_sink(sub.func) for sub in ast.walk(node))
+    """서브트리 안에서 실행·네트워크 싱크 호출이 보이면 True. 싱크가 다운로드뿐이면 False."""
+    names = {_sink_name(sub.func) for sub in ast.walk(node)
+             if isinstance(sub, ast.Call) and _is_exec_sink(sub.func)}
+    return bool(names - _DOWNLOAD_ONLY_SINKS)
 
 
 def _hook_class_defs(tree: ast.Module, value: ast.expr) -> ast.ClassDef | None:

