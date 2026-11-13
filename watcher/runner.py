@@ -28,15 +28,19 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 
 import httpx
 
+import ecosystems as ecos
 from api.schemas import ScanRequest
 from api.storage import ScanStore
-from common.pypi import PackageNotFound, PyPIError, fetch_project
+from common.pypi import fetch_project
+from ecosystems.base import PackageNotFound
+from ecosystems.base import RegistryError as PyPIError
 from scoring.features import TYPOSQUAT_MIN_RATIO
 from watcher.feed import fetch_feeds
 
@@ -57,6 +61,7 @@ class CycleReport:
     feed_errors: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)    # 스캔 전에 PyPI 에서 사라진 패키지
     missing: int = 0                       # 조회가 안 돼 MISSING_GRACE 뒤 다시 볼 패키지 수
+    by_ecosystem: dict[str, dict[str, int]] = field(default_factory=dict)  # 생태계별 집계
 
 
 #: 감시 큐에 "PyPI 에서 삭제됨" 을 남길 때 쓰는 seen 표시 버전 — 다음 주기에 다시 조회하지 않게
@@ -71,9 +76,15 @@ MISSING_GRACE = 30 * 60
 Missing = dict[str, tuple[str | None, float]]
 
 
-def _removed_from_pypi(record: dict) -> bool:
-    """스캔 시점에 이미 PyPI 에 없던 릴리스 (common.pypi.PackageNotFound 메시지)."""
-    return any("not on PyPI" in e for e in record.get("layer_errors", ()))
+def _removed_from_registry(record: dict) -> bool:
+    """스캔 시점에 이미 레지스트리에 없던 릴리스. 어댑터 계약(ecosystems/base.py)상 메시지는
+    항상 ``"<name> is not on <registry_label> (...)"`` 라 레지스트리 이름과 무관하게 맞는다."""
+    return any(
+        " is not on " in e for e in record.get("layer_errors", ()) if e.startswith("static:")
+    )
+
+
+_removed_from_pypi = _removed_from_registry  # 하위 호환 이름
 
 
 def _lookalike_new_project(record: dict) -> bool:
@@ -122,49 +133,128 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _adapter(eco_id: str, adapters: dict | None):
+    if adapters and eco_id in adapters:
+        return adapters[eco_id]
+    return ecos.get(eco_id)
+
+
 async def run_cycle(
     *,
     http: httpx.AsyncClient,
     store: ScanStore,
     scan: Callable[..., Awaitable],
-    fetch: FetchFn = fetch_feeds,
-    resolve: ResolveFn = resolve_latest,
+    fetch: FetchFn | None = None,
+    resolve: ResolveFn | None = None,
     max_scans: int = 50,
     concurrency: int = 3,
     missing: Missing | None = None,
     clock: Callable[[], float] = time.time,
+    ecosystems: Sequence[str] = ("pip",),
+    adapters: dict | None = None,
 ) -> CycleReport:
+    """``ecosystems`` 를 차례로 한 주기씩 돈다. ``max_scans`` 는 **생태계마다** 따로 쓴다 —
+    바쁜 레지스트리(npm 은 시간당 수천 건)가 한 주기 예산을 다 먹어 pip·cargo 가 계속 밀리면
+    피드에서 빠져 영영 못 보게 된다. ``fetch``·``resolve`` 는 pip 전용 주입점(테스트·기존 호출자),
+    다른 생태계는 어댑터의 ``fetch_feed``·``fetch_project`` 를 쓴다. ``adapters`` 는
+    테스트용 덮어쓰기."""
     report = CycleReport()
     missing = {} if missing is None else missing
+    for eco_id in ecosystems:
+        try:
+            adapter = _adapter(eco_id, adapters)
+        except ecos.UnknownEcosystem as exc:
+            if eco_id != "pip":
+                report.feed_errors.append(f"{eco_id}: {exc}")
+                continue
+            adapter = None  # pip 어댑터가 없는 브랜치에서도 기존 경로(feed.py)로 돈다
+        if eco_id == "pip" and fetch is not None:
+            eco_fetch = fetch
+        elif eco_id == "pip":
+            eco_fetch = fetch_feeds
+        elif adapter is not None and adapter.has_feed:
+            eco_fetch = adapter.fetch_feed
+        else:
+            report.feed_errors.append(f"{eco_id}: 신규 업로드 피드가 없는 생태계")
+            continue
+        if eco_id == "pip" and resolve is not None:
+            eco_resolve = resolve
+        elif eco_id == "pip":
+            eco_resolve = resolve_latest
+        else:
+            eco_resolve = partial(_resolve_with_adapter, adapter)
+        await _run_ecosystem(
+            report, eco_id, adapter, eco_fetch, eco_resolve,
+            http=http, store=store, scan=scan, max_scans=max_scans,
+            concurrency=concurrency, missing=missing, clock=clock,
+        )
+    return report
+
+
+async def _resolve_with_adapter(adapter, name: str, http: httpx.AsyncClient) -> str:
+    project = await adapter.fetch_project(name, client=http)
+    if not project.latest:
+        raise PyPIError(f"{name}: {adapter.registry_label} 에 최신 버전이 없음")
+    return project.latest
+
+
+def _make_request(adapter, eco_id: str, name: str, version: str) -> ScanRequest:
+    """이름·버전 검증은 생태계 어댑터가 한다(스코프·그룹 좌표 등 pip 정규식에 안 맞는 문법).
+    ScanRequest 가 아직 그 생태계를 모르는 브랜치에서는 어댑터 검증을 통과한 값으로
+    ``model_construct`` 한다 — 검증을 건너뛰는 게 아니라 어댑터가 대신하는 것이다."""
+    if eco_id == "pip":
+        return ScanRequest(name=name, version=version)
+    adapter.validate(name, version)
+    try:
+        return ScanRequest(ecosystem=eco_id, name=name, version=version)
+    except ValueError:
+        return ScanRequest.model_construct(ecosystem=eco_id, name=name, version=version)
+
+
+async def _run_ecosystem(
+    report: CycleReport, eco_id: str, adapter, fetch, resolve, *,
+    http, store, scan, max_scans, concurrency, missing, clock,
+) -> None:
+    # missing 의 키: pip 는 이름 그대로(기존 호출자·테스트 호환), 나머지는 "생태계:이름"
+    def mk(name: str) -> str:
+        return name if eco_id == "pip" else f"{eco_id}:{name}"
+
+    scanned0, flagged0 = report.scanned, len(report.flagged)
     now = clock()
     # 유예가 끝난 것은 피드에서 이미 빠졌어도 마지막으로 한 번 더 본다
-    due = {n for n, (_, t) in missing.items() if now - t >= MISSING_GRACE}
-    items, report.feed_errors = await fetch(http)
-    items = list(dict.fromkeys([*items, *((n, missing[n][0]) for n in sorted(due))]))
-    report.fetched = len(items)
+    prefix = "" if eco_id == "pip" else f"{eco_id}:"
+    due = {
+        k[len(prefix):] for k, (_, t) in missing.items()
+        if now - t >= MISSING_GRACE and (k.startswith(prefix) if prefix else ":" not in k)
+    }
+    items, errs = await fetch(http)
+    report.feed_errors += errs
+    due_items = [(n, missing[mk(n)][0]) for n in sorted(due)]
+    items = list(dict.fromkeys([*items, *due_items]))
+    report.fetched += len(items)
 
     # 신규 프로젝트 피드는 버전이 없다. 이미 본 이름이면 최신 버전 조회를 건너뛴다 —
     # 그 뒤의 릴리스는 updates 피드로 들어오므로, 매 주기 40건씩 JSON 을 다시 받을 이유가 없다.
-    known = await store.seen_names([n for n, v in items if v is None])
+    known = await store.seen_names([n for n, v in items if v is None], eco_id)
     sem = asyncio.Semaphore(concurrency)
 
     async def _removed(name: str, version: str) -> None:
-        """피드에 보였는데 스캔 전에 PyPI 가 지운 패키지. 새 업로드가 몇 분 만에 사라지는 건
-        거의 PyPI 의 악성 차단이다 — 우리 엔진이 봤든 못 봤든 놓치면 안 되는 사후 정답이다
+        """피드에 보였는데 스캔 전에 레지스트리가 지운 패키지. 새 업로드가 몇 분 만에 사라지는 건
+        거의 레지스트리의 악성 차단이다 — 우리 엔진이 봤든 못 봤든 놓치면 안 되는 사후 정답이다
         (실측: OpenSSF 신고 marocolor 는 감시 중 탐지됐는데 우리 기록에 흔적이 없었다)."""
-        missing.pop(name, None)
-        if await store.enqueue_removed(name, version, _now()):
-            report.removed.append(name)
+        missing.pop(mk(name), None)
+        if await store.enqueue_removed(name, version, _now(), eco_id):
+            report.removed.append(name if eco_id == "pip" else f"{eco_id}:{name}")
 
     async def _not_found(name: str, version: str | None) -> None:
         """조회가 안 됐다 — 유예가 지났으면 삭제로 확정, 아니면 나중에 다시 본다.
         seen 으로 표시하지 않으므로 피드에 남아 있는 동안은 매 주기 다시 조회된다."""
         if name in due:
             if version is None:
-                await store.mark_seen(name, REMOVED_MARK, _now())
+                await store.mark_seen(name, REMOVED_MARK, _now(), eco_id)
             await _removed(name, version or "?")
         else:
-            missing.setdefault(name, (version, now))
+            missing.setdefault(mk(name), (version, now))
 
     async def _resolve(name: str) -> tuple[str, str] | None:
         async with sem:
@@ -188,12 +278,12 @@ async def run_cycle(
     requests: list[ScanRequest] = []
     for name, version in dict.fromkeys(candidates):
         try:
-            requests.append(ScanRequest(name=name, version=version))
+            requests.append(_make_request(adapter, eco_id, name, version))
         except ValueError:
             report.skipped_invalid.append(f"{name}=={version}")
 
-    pending = await store.unseen([(r.name, r.version) for r in requests])
-    report.deferred = max(0, len(pending) - max_scans)
+    pending = await store.unseen([(r.name, r.version) for r in requests], eco_id)
+    report.deferred += max(0, len(pending) - max_scans)
     todo = {p for p in pending[:max_scans]}
     requests = [r for r in requests if (r.name, r.version) in todo]
 
@@ -206,16 +296,17 @@ async def run_cycle(
                 report.failed.append((f"{req.name}=={req.version}", str(exc)))
                 return
         record = result.model_dump(mode="json")
+        record.setdefault("ecosystem", eco_id)
         report.scanned += 1
-        if _removed_from_pypi(record):
+        if _removed_from_registry(record):
             if req.name in due:
-                await store.mark_seen(req.name, req.version, _now())
+                await store.mark_seen(req.name, req.version, _now(), eco_id)
             await _not_found(req.name, req.version)
             return
-        await store.mark_seen(req.name, req.version, _now())
-        missing.pop(req.name, None)
+        await store.mark_seen(req.name, req.version, _now(), eco_id)
+        missing.pop(mk(req.name), None)
         if is_suspicious(record):
-            seen_before = await store.queued_records(req.name)
+            seen_before = await store.queued_records(req.name, eco_id)
             if any(signature(r) == signature(record) for r in seen_before):
                 report.repeat += 1
                 return
@@ -224,4 +315,6 @@ async def run_cycle(
 
     await asyncio.gather(*(_scan(r) for r in requests))
     report.missing = len(missing)
-    return report
+    report.by_ecosystem[eco_id] = {
+        "scanned": report.scanned - scanned0, "flagged": len(report.flagged) - flagged0,
+    }

@@ -24,6 +24,7 @@ WatchStatus = Literal["new", "malicious", "false_positive", "reported"]
 class QueueItem(BaseModel):
     id: int
     scan_id: int
+    ecosystem: str = "pip"
     name: str
     version: str
     verdict: str
@@ -43,9 +44,12 @@ class QueueUpdate(BaseModel):
 async def list_queue(
     request: Request,
     status: Annotated[WatchStatus | None, Query(description="비우면 전체")] = None,
+    ecosystem: Annotated[
+        str | None, Query(pattern=r"^[a-z]{2,16}$", description="비우면 전체 생태계")
+    ] = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[QueueItem]:
-    rows = await request.app.state.store.queue(status, limit)
+    rows = await request.app.state.store.queue(status, limit, ecosystem)
     return [QueueItem.model_validate(r) for r in rows]
 
 

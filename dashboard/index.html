@@ -113,6 +113,8 @@
   .st{font-family:var(--mono);font-size:12px;color:var(--muted)}
   #queue .dot{display:inline-block;margin-top:6px}
   .d-removed{background:#B48CF2}
+  select{background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:10px 8px;font-family:var(--mono);font-size:13.5px}
+  .eco{font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:0 5px;margin-right:6px}
 
 </style>
 </head>
@@ -120,7 +122,7 @@
 <div class="wrap">
   <header>
     <div class="wordmark">supply-unchained</div>
-    <div class="tagline">pip 패키지 스캔 · SBOM</div>
+    <div class="tagline">오픈소스 패키지 스캔 · SBOM</div>
   </header>
 
   <div class="stats" aria-label="최근 스캔 통계">
@@ -135,7 +137,8 @@
       <div class="card">
         <h2>스캔</h2>
         <div class="scanform">
-          <input id="pkgName" placeholder="패키지 이름 (예: reqeusts)" aria-label="패키지 이름">
+          <select id="ecoSel" aria-label="생태계"></select>
+          <input id="pkgName" placeholder="패키지 이름 (예: reqeusts, @scope/pkg)" aria-label="패키지 이름">
           <input id="pkgVer" placeholder="버전 (예: 1.0.0)" aria-label="버전" style="flex:0 1 140px">
           <button id="scanBtn">실행</button>
         </div>
@@ -145,21 +148,21 @@
       <div id="result" aria-live="polite"></div>
 
       <div class="card" id="batch">
-        <h2>requirements 일괄 스캔 → SBOM</h2>
-        <textarea id="reqText" aria-label="requirements.txt 내용"
-          placeholder="requirements.txt 내용을 붙여넣으세요&#10;requests==2.30.0&#10;reqeusts==1.0.0"></textarea>
+        <h2>일괄 스캔 → SBOM</h2>
+        <textarea id="reqText" aria-label="의존성 목록"
+          placeholder="한 줄에 하나&#10;requests==2.30.0 (위 선택 생태계)&#10;npm:left-pad@1.3.0&#10;cargo:serde@1.0.200"></textarea>
         <div class="row">
           <button id="batchBtn">일괄 스캔</button>
           <button id="sbomBtn" class="ghost" disabled>CycloneDX SBOM 내보내기</button>
           <span class="progress" id="batchProgress"></span>
         </div>
-        <p class="hint"><code>name==version</code> 으로 고정된 줄만 스캔합니다(CI 게이트의
-           <code>check-file</code> 과 같은 규칙). 행을 누르면 상세 결과를 봅니다.</p>
+        <p class="hint"><code>생태계:이름@버전</code>(예: <code>npm:left-pad@1.3.0</code>) 또는 위에서 고른
+           생태계의 <code>name==version</code> 줄만 스캔합니다. 행을 누르면 상세 결과를 봅니다.</p>
         <div id="batchResult"></div>
       </div>
 
       <div class="card" id="watch">
-        <h2>PyPI 감시 큐</h2>
+        <h2>감시 큐 <select id="queueEco" aria-label="생태계 필터" style="margin-left:8px;padding:3px 6px"></select></h2>
         <div class="tabs" role="group" aria-label="검토 상태">
           <button data-st="new" aria-pressed="true">미검토</button>
           <button data-st="malicious" aria-pressed="false">악성 확인</button>
@@ -169,7 +172,7 @@
         </div>
         <div id="queue"><p class="empty">큐가 비어 있습니다</p></div>
         <p class="hint">감시기 실행: <code>python -m cli.su_scan watch</code> — 새 업로드를 설치 없이 스캔해
-           BLOCK 이거나 인기 패키지 이름과 유사도가 높은 것만 올립니다. 코드는 <b>Inspector</b> 링크로 브라우저에서 확인하세요
+           BLOCK 이거나 인기 패키지 이름과 유사도가 높은 것만 올립니다. 코드는 <b>레지스트리</b> 링크로 브라우저에서 확인하세요
            (내려받거나 설치하지 마세요).</p>
       </div>
     </section>
@@ -185,6 +188,39 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ── 생태계 ── */
+// 식별자·purl 타입·레지스트리 URL. purl 은 CycloneDX 의 PURL 스펙(타입별 이름 규칙)을 따른다.
+const ECOS = {
+  pip:{label:"pip", purl:"pypi", web:(n,v)=>`https://pypi.org/project/${encodeURIComponent(n)}/${encodeURIComponent(v)}/`,
+       code:(n,v)=>`https://inspector.pypi.io/project/${encodeURIComponent(n)}/${encodeURIComponent(v)}/`},
+  npm:{label:"npm", purl:"npm", web:(n,v)=>`https://www.npmjs.com/package/${n.split("/").map(encodeURIComponent).join("/")}/v/${encodeURIComponent(v)}`},
+  cargo:{label:"cargo", purl:"cargo", web:(n,v)=>`https://crates.io/crates/${encodeURIComponent(n)}/${encodeURIComponent(v)}`},
+  go:{label:"go", purl:"golang", web:(n,v)=>`https://pkg.go.dev/${n.split("/").map(encodeURIComponent).join("/")}@${encodeURIComponent(v)}`},
+  maven:{label:"maven", purl:"maven", web:(n,v)=>{const [g,a]=n.split(":"); return a?`https://central.sonatype.com/artifact/${encodeURIComponent(g)}/${encodeURIComponent(a)}/${encodeURIComponent(v)}`:""}},
+  rubygems:{label:"rubygems", purl:"gem", web:(n,v)=>`https://rubygems.org/gems/${encodeURIComponent(n)}/versions/${encodeURIComponent(v)}`},
+  nuget:{label:"nuget", purl:"nuget", web:(n,v)=>`https://www.nuget.org/packages/${encodeURIComponent(n)}/${encodeURIComponent(v)}`},
+  composer:{label:"composer", purl:"composer", web:(n,v)=>`https://packagist.org/packages/${n.split("/").map(encodeURIComponent).join("/")}#${encodeURIComponent(v)}`},
+};
+const ecoOf = e => ECOS[e] ? e : "pip";   // 모르는 값은 pip 로 (구 기록·서버가 더 새 생태계를 줄 때)
+const ecoLabel = e => esc(ECOS[e]?.label || e || "pip");
+const webUrl = (e,n,v) => { try{ return (ECOS[e]?.web || (()=>""))(n,v); }catch(_){ return ""; } };
+// purl 이름 규칙: pypi 는 소문자·정규화, maven 은 group/artifact, npm 스코프는 %40, 나머지는 원문
+function purlOf(e, name, version){
+  const t = ECOS[e]?.purl || "pypi", enc = encodeURIComponent;
+  let n;
+  if(t==="pypi") n = enc(name.toLowerCase().replace(/[-_.]+/g,"-"));
+  else if(t==="maven"){ const [g,a] = name.split(":"); n = a ? enc(g)+"/"+enc(a) : enc(name); }
+  else if(t==="npm" && name.startsWith("@")) n = name.split("/").map((x,i)=>i===0?"%40"+enc(x.slice(1)):enc(x)).join("/");
+  else if(t==="golang"||t==="composer") n = name.split("/").map(enc).join("/");
+  else n = enc(name);
+  return `pkg:${t}/${n}@${enc(version)}`;
+}
+function fillEcoSelects(){
+  const opts = Object.keys(ECOS).map(k=>`<option value="${k}">${ecoLabel(k)}</option>`).join("");
+  $("#ecoSel").innerHTML = opts;
+  $("#queueEco").innerHTML = `<option value="">전체 생태계</option>`+opts;
+}
 
 /* ── 결과 렌더 ── */
 const sevCls = s => "sev-"+esc(s);
@@ -213,7 +249,7 @@ function renderResult(r){
   <div class="card">
     <div class="verdict-head">
       <span class="badge v-${esc(v)}">${v==="safe"?"SAFE":v==="warn"?"WARN":"BLOCK"}</span>
-      <span class="pkg">${esc(r.name)}==${esc(r.version)}</span>
+      <span class="pkg"><span class="eco">${ecoLabel(r.ecosystem)}</span>${esc(r.name)}==${esc(r.version)}</span>
       <span class="score">위험도 <b>${r.risk_score}</b>/100</span>
     </div>
     <ul class="reasons">${(r.verdict_reasons||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
@@ -240,7 +276,7 @@ async function loadHistory(){
     $("#history").innerHTML = rows.map(r=>`
       <button class="hist-row" data-id="${r.scan_id}">
         <span class="dot d-${esc(r.verdict)}" aria-label="${esc(r.verdict)}"></span>
-        <span class="hist-pkg">${esc(r.name)}==${esc(r.version)}</span>
+        <span class="hist-pkg"><span class="eco">${ecoLabel(r.ecosystem)}</span>${esc(r.name)}==${esc(r.version)}</span>
         <span class="hist-meta">${r.risk_score} · ${esc((r.scanned_at||"").slice(5,16).replace("T"," "))}</span>
       </button>`).join("");
     document.querySelectorAll(".hist-row").forEach(b=>b.addEventListener("click", async ()=>{
@@ -264,7 +300,7 @@ async function scan(){
   try{
     const res = await fetch("/api/v1/scan",{method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({ecosystem:"pip",name,version})});
+      body:JSON.stringify({ecosystem:$("#ecoSel").value||"pip",name,version})});
     if(!res.ok) throw new Error("HTTP "+res.status);
     renderResult(await res.json());
     loadHistory();
@@ -282,14 +318,17 @@ function renderStats(rows){
 }
 
 /* ── requirements 일괄 스캔 ── */
-// cli/su_scan.py check-file 과 같은 규칙: 주석·옵션 줄은 무시, == 로 고정된 줄만 스캔.
-function parseRequirements(text){
+// 두 형식: ``생태계:이름@버전``(예: npm:@scope/pkg@1.0.0, maven:g:a@1.0) 와, 선택한 생태계의
+// requirements 식 ``name==version``. 주석·옵션 줄은 무시, 버전이 고정되지 않은 줄은 건너뛴다.
+function parseBatch(text, defaultEco){
   const pinned = [], skipped = [];
   for(const raw of text.split(/\r?\n/)){
-    const line = raw.split("#")[0].trim();
+    const line = raw.split(/\s#/)[0].replace(/^#.*/,"").trim();
     if(!line || line.startsWith("-")) continue;
-    const m = line.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*==\s*([A-Za-z0-9._+!-]+)\s*(?:;.*)?$/);
-    if(m) pinned.push({name:m[1], version:m[2]});
+    let m = line.match(/^([a-z]+):(.+)@([A-Za-z0-9][A-Za-z0-9._+!~-]*)$/);
+    if(m && ECOS[m[1]]){ pinned.push({eco:m[1], name:m[2], version:m[3]}); continue; }
+    m = line.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*==\s*([A-Za-z0-9._+!-]+)\s*(?:;.*)?$/);
+    if(m) pinned.push({eco:defaultEco, name:m[1], version:m[2]});
     else skipped.push(line);
   }
   return {pinned, skipped};
@@ -304,11 +343,11 @@ function renderBatch(skipped){
   const rows = sorted.map((x, i) => x.r ? `
     <tr class="batch-row" data-i="${batchResults.indexOf(x)}">
       <td><span class="badge v-${esc(x.r.verdict)}" style="font-size:12px;padding:2px 10px">${esc(x.r.verdict.toUpperCase())}</span></td>
-      <td class="mono">${esc(x.name)}==${esc(x.version)}</td>
+      <td class="mono"><span class="eco">${ecoLabel(x.eco)}</span>${esc(x.name)}==${esc(x.version)}</td>
       <td class="mono">${x.r.risk_score}</td>
       <td class="mono">${x.r.vulnerabilities.length}</td>
       <td class="mono">${x.r.static_findings.length}</td></tr>` : `
-    <tr><td class="sev-high">ERROR</td><td class="mono">${esc(x.name)}==${esc(x.version)}</td>
+    <tr><td class="sev-high">ERROR</td><td class="mono"><span class="eco">${ecoLabel(x.eco)}</span>${esc(x.name)}==${esc(x.version)}</td>
       <td colspan="3" class="detail">${esc(x.error)}</td></tr>`).join("");
   $("#batchResult").innerHTML = `
     <div class="tablewrap"><table>
@@ -325,16 +364,16 @@ async function scanOne(item){
   try{
     const res = await fetch("/api/v1/scan",{method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({ecosystem:"pip", name:item.name, version:item.version})});
+      body:JSON.stringify({ecosystem:item.eco, name:item.name, version:item.version})});
     if(!res.ok) throw new Error("HTTP "+res.status);
     item.r = await res.json();
   }catch(e){ item.error = e.message; }
 }
 
 async function batchScan(){
-  const {pinned, skipped} = parseRequirements($("#reqText").value);
+  const {pinned, skipped} = parseBatch($("#reqText").value, $("#ecoSel").value||"pip");
   if(!pinned.length){
-    $("#batchResult").innerHTML = `<p class="empty">name==version 형태의 줄이 없습니다.</p>`;
+    $("#batchResult").innerHTML = `<p class="empty">스캔할 줄이 없습니다 (생태계:이름@버전 또는 name==version).</p>`;
     return;
   }
   const btn = $("#batchBtn"); btn.disabled = true; $("#sbomBtn").disabled = true;
@@ -356,8 +395,6 @@ async function batchScan(){
 }
 
 /* ── CycloneDX 1.5 SBOM ── */
-const purlOf = (name, version) =>
-  `pkg:pypi/${encodeURIComponent(name.toLowerCase().replace(/[-_.]+/g, "-"))}@${encodeURIComponent(version)}`;
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() :
   "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
     (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)));
@@ -365,8 +402,8 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID() :
 function buildSbom(){
   const scanned = batchResults.filter(x => x.r);
   const components = scanned.map(x => ({
-    type:"library", "bom-ref":purlOf(x.name, x.version),
-    name:x.name, version:x.version, purl:purlOf(x.name, x.version),
+    type:"library", "bom-ref":purlOf(x.eco, x.name, x.version),
+    name:x.name, version:x.version, purl:purlOf(x.eco, x.name, x.version),
     properties:[
       {name:"supply-unchained:verdict", value:x.r.verdict},
       {name:"supply-unchained:risk_score", value:String(x.r.risk_score)},
@@ -375,14 +412,14 @@ function buildSbom(){
     ],
   }));
   const vulnerabilities = scanned.flatMap(x => x.r.vulnerabilities.map(v => ({
-    "bom-ref":`${v.id}@${purlOf(x.name, x.version)}`,
+    "bom-ref":`${v.id}@${purlOf(x.eco, x.name, x.version)}`,
     id:v.id,
     source:{name:v.source, url:`https://osv.dev/vulnerability/${encodeURIComponent(v.id)}`},
     ratings:[{severity:v.severity}],
     ...(v.cwe_ids?.length ? {cwes:v.cwe_ids.map(c => Number(String(c).replace(/\D/g, ""))).filter(Boolean)} : {}),
     ...(v.summary ? {description:v.summary} : {}),
     ...(v.fixed_version ? {recommendation:`Upgrade to ${v.fixed_version}`} : {}),
-    affects:[{ref:purlOf(x.name, x.version)}],
+    affects:[{ref:purlOf(x.eco, x.name, x.version)}],
   })));
   return {
     bomFormat:"CycloneDX", specVersion:"1.5", serialNumber:`urn:uuid:${uuid()}`, version:1,
@@ -411,21 +448,26 @@ const NEXT = {new:[["malicious","악성"],["false_positive","오탐"]],
 
 async function loadQueue(){
   try{
-    const q = queueStatus ? "?status="+encodeURIComponent(queueStatus) : "";
-    const rows = await (await fetch("/api/v1/watch/queue"+q)).json();
+    const qs = new URLSearchParams();
+    if(queueStatus) qs.set("status", queueStatus);
+    if($("#queueEco").value) qs.set("ecosystem", $("#queueEco").value);
+    const rows = await (await fetch("/api/v1/watch/queue"+(qs.toString()?"?"+qs:""))).json();
     if(!rows.length){ $("#queue").innerHTML = `<p class="empty">항목 없음</p>`; return; }
     $("#queue").innerHTML = `<div class="tablewrap"><table>
-      <tr><th></th><th>패키지</th><th>점수</th><th>상태</th><th>확인</th><th>판정 기록</th></tr>
+      <tr><th></th><th>생태계</th><th>패키지</th><th>점수</th><th>상태</th><th>확인</th><th>판정 기록</th></tr>
       ${rows.map(r=>{
-        const n = encodeURIComponent(r.name), v = encodeURIComponent(r.version);
+        const eco = ecoOf(r.ecosystem), reg = webUrl(eco, r.name, r.version), code = ECOS[eco]?.code?.(r.name, r.version);
+        // href 로 들어가는 값은 위 함수가 만든 https URL 뿐 — 그래도 속성에 넣기 전에 esc 한다
+        const links = (code?`<a href="${esc(code)}" target="_blank" rel="noopener noreferrer">Inspector</a>`:"")
+          + (reg?`<a href="${esc(reg)}" target="_blank" rel="noopener noreferrer">${ecoLabel(eco)}</a>`:`<span class="st">링크 없음</span>`);
         return `<tr>
         <td><span class="dot d-${esc(r.verdict)}" aria-label="${esc(r.verdict)}"></span></td>
+        <td class="st">${ecoLabel(r.ecosystem)}</td>
         <td class="mono"><span class="q-pkg" data-scan="${r.scan_id}">${esc(r.name)}==${esc(r.version)}</span>
           <div class="st">${esc((r.created_at||"").slice(5,16).replace("T"," "))}${r.note?" · "+esc(r.note):""}</div></td>
         <td class="mono">${r.verdict==="removed" ? "삭제됨" : r.risk_score}</td>
         <td class="st">${esc(ST_LABEL[r.status]||r.status)}</td>
-        <td class="q-links"><a href="https://inspector.pypi.io/project/${n}/${v}/" target="_blank" rel="noopener noreferrer">Inspector</a><a
-           href="https://pypi.org/project/${n}/${v}/" target="_blank" rel="noopener noreferrer">PyPI</a></td>
+        <td class="q-links">${links}</td>
         <td><div class="q-actions">${(NEXT[r.status]||[]).map(([s,l])=>
           `<button class="${s==="malicious"?"mal":""}" data-id="${r.id}" data-to="${s}">${l}</button>`).join("")}</div></td>
       </tr>`}).join("")}</table></div>`;
@@ -448,6 +490,8 @@ document.querySelectorAll("#watch .tabs button").forEach(b=>b.addEventListener("
   loadQueue();
 }));
 
+fillEcoSelects();
+$("#queueEco").addEventListener("change", loadQueue);
 $("#batchBtn").addEventListener("click", batchScan);
 $("#sbomBtn").addEventListener("click", downloadSbom);
 $("#scanBtn").addEventListener("click", scan);
