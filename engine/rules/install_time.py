@@ -22,6 +22,7 @@ eval_malware_dataset.py). 아무것도 못 잡은 139개 중 109개는 **setup.p
 from __future__ import annotations
 
 import ast
+import contextlib
 import re
 import tomllib
 from collections.abc import Iterable, Iterator
@@ -43,6 +44,7 @@ from engine.rules.exec_scope import (
     body_nodes,
     module_level,
 )
+from engine.rules.install_hooks import pth_own_imports
 
 RULE_INSTALL_TIME = "custom-install-time-exec"
 RULE_EXFIL = "custom-exfil-endpoint"
@@ -304,6 +306,25 @@ def _is_test_file(rel: PurePosixPath) -> bool:
     return any(part in ("test", "tests") or part.endswith("_tests") for part in rel.parts[:-1])
 
 
+def _pth_imported(ctx: FileContext) -> frozenset[str]:
+    """트리 안의 모든 .pth 가 import 하는 최상위 모듈 이름 (트리마다 한 번 계산)."""
+    if ctx.tree is None:
+        return frozenset()
+    cached = getattr(ctx.tree, "_su_pth_imports", None)
+    if cached is not None:
+        return cached
+    names: set[str] = set()
+    for f in ctx.tree.files():
+        if f.endswith(".pth"):
+            for line in (ctx.tree.read(f) or "").splitlines():
+                if line.strip().startswith(("import ", "import	")):
+                    names.update(pth_own_imports(line.strip()) or [])
+    out = frozenset(names)
+    with contextlib.suppress(AttributeError):
+        ctx.tree._su_pth_imports = out  # type: ignore[attr-defined]
+    return out
+
+
 def _is_package_module(ctx: FileContext) -> bool:
     """누군가 import 할 코드인가 — 패키지 디렉터리(__init__.py 있음) 안이거나 sdist 최상위
     단일 모듈. ``scripts/``·``tools/``·``other/`` 의 보조 스크립트는 import 되지 않는다
@@ -316,6 +337,10 @@ def _is_package_module(ctx: FileContext) -> bool:
     if rel.name == "__init__.py":
         return True
     if ctx.tree is not None and ctx.tree.read((rel.parent / "__init__.py").as_posix()) is not None:
+        return True
+    # .pth 가 import 하는 모듈 — 인터프리터가 뜰 때마다 실행된다 (휠 루트의 단일 모듈은
+    # __init__.py 도 옆 setup.py 도 없다). custom-pth 가 이 경우를 MEDIUM 으로 낮추는 전제다.
+    if rel.stem in _pth_imported(ctx):
         return True
     # sdist 최상위(이름-버전/모듈.py) 의 단일 모듈 — setup.py 가 옆에 있으면 py_modules 다
     return ctx.tree is not None and ctx.tree.read((rel.parent / "setup.py").as_posix()) is not None

@@ -138,6 +138,27 @@ def _installs_at_site_packages_root(relpath: str) -> bool:
     )
 
 
+def pth_own_imports(line: str) -> list[str] | None:
+    """``import a, b.c`` 처럼 **import 문 하나뿐**인 줄이면 최상위 모듈 이름들, 아니면 None.
+    ``;`` 로 이어 붙인 코드·``exec``·``__import__`` 가 있으면 None 이다."""
+    try:
+        tree = ast.parse(line)
+    except (SyntaxError, ValueError):
+        return None
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Import):
+        return None
+    return [a.name.split(".")[0] for a in tree.body[0].names]
+
+
+def own_module_files(ctx: FileContext, top: str) -> list[str]:
+    """같은 배포물 안에서 최상위 모듈 ``top`` 이 될 파일 (``top.py`` / ``top/__init__.py``)."""
+    if ctx.tree is None:
+        return []
+    return [f for f in ctx.tree.files()
+            if PurePosixPath(f).name == f"{top}.py"
+            or (PurePosixPath(f).name == "__init__.py" and PurePosixPath(f).parent.name == top)]
+
+
 def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
     """Flag ``.pth`` lines that ``site.py`` will execute at every startup.
 
@@ -162,7 +183,20 @@ def pth_autoexec(ctx: FileContext) -> Iterable[StaticFinding]:
         if not line.startswith(("import ", "import\t")):
             continue
 
-        if reachable:
+        own = pth_own_imports(line)
+        if reachable and own and all(own_module_files(ctx, m) for m in own):
+            # 신규 업로드 실측 오탐(docs/eval/watch-new-uploads.md §P2): dagz·doeff-hy·
+            # quantark·nvidia-cutlass-dsl·triton-utlx-rocm 의 .pth 가 모두 같은 배포물의 자기
+            # 모듈을 import 하는 한 줄이었다 — 의도된 시작 훅이다. 그 모듈의 import 시점 코드는
+            # custom-install-time-exec 가 본다(.pth 가 import 하는 모듈은 위치와 무관하게
+            # 패키지 모듈로 취급 — install_time._is_package_module).
+            severity = Severity.MEDIUM
+            detail = (
+                "'.pth' runs at every interpreter startup but only imports this "
+                f"distribution's own module(s) {own} — their import-time code is analysed "
+                f"by custom-install-time-exec: {line[:120]}"
+            )
+        elif reachable:
             severity = Severity.HIGH
             detail = (
                 "'.pth' file executes code at interpreter startup "

