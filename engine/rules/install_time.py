@@ -381,6 +381,23 @@ def exfil_endpoint(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding
 # docs/eval/py-engine.md 에 있다.
 
 RULE_ENTRYPOINT = "custom-entrypoint-exec"
+
+#: 진입점에서는 다운로드 도구 자체는 정상이다 — 실측 오탐: ultralytics 8.3.40·8.3.44 의
+#: ``yolo`` 명령이 내려받기 재시도에 ``subprocess.run(["curl", ...])`` 를 쓴다 (탈취 세트의
+#: 직전 정상 버전). ``curl ... | sh`` 처럼 다른 수상 토큰이 함께 있으면 여전히 HIGH 다.
+_ENTRY_DOWNLOADERS = {"curl", "wget", "invoke-webrequest", "iwr"}
+
+
+def _entry_suspicious(call: ast.Call, aliases: dict[str, str]) -> str | None:
+    if _suspicious_spawn(call, aliases) is None:
+        return None
+    tokens = {m.group(0).lower() for sub in ast.walk(call)
+              if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+              for m in _SUSPICIOUS_CMD.finditer(sub.value)}
+    rest = tokens - _ENTRY_DOWNLOADERS
+    if tokens and not rest:
+        return None
+    return sorted(rest)[0] if rest else _suspicious_spawn(call, aliases)
 _ENTRY_FILES = {"pyproject.toml", "setup.cfg", "entry_points.txt", "setup.py"}
 _SPEC = re.compile(r"^\s*([\w.\-]+)\s*=\s*([\w.]+)\s*:\s*([\w.]+)")
 
@@ -460,7 +477,7 @@ def entrypoint_exec(ctx: FileContext) -> Iterable[StaticFinding]:
             node = r.node
             if not isinstance(node, ast.Call):
                 continue
-            token = _suspicious_spawn(node, r.module.aliases)
+            token = _entry_suspicious(node, r.module.aliases)
             if token is None or (r.module.relpath, node.lineno) in seen:
                 continue
             seen.add((r.module.relpath, node.lineno))

