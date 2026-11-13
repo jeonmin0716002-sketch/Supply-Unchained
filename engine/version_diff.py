@@ -40,6 +40,7 @@ from common.archive import extract_archive
 from common.pypi import PackageContext, ProjectData, PyPIError, download, select_artifact
 from engine.rules.install_time import (
     ORIGIN_MARK,
+    RULE_BENIGN_NET,
     RULE_INDIRECT_NET,
     RULE_INSTALL_SPAWN,
     RULE_INSTALL_TIME,
@@ -54,7 +55,8 @@ RULE_NEW_BEHAVIOR = "custom-new-behavior"
 ESCALATE_WHEN_NEW: frozenset[str] = frozenset({RULE_INSTALL_SPAWN, RULE_INDIRECT_NET})
 
 #: 행위 이름을 "무엇을 했는가"로 잡는 규칙 (파일 위치는 뺀다)
-_BY_WHAT = frozenset({RULE_INSTALL_TIME, RULE_INSTALL_SPAWN, RULE_INDIRECT_NET})
+_BY_WHAT = frozenset({RULE_INSTALL_TIME, RULE_INSTALL_SPAWN, RULE_INDIRECT_NET,
+                      RULE_BENIGN_NET})
 _WHAT = re.compile(r"(?:네트워크 호출|수상한 명령 실행|프로세스 실행) .*")
 
 _HIGH = (Severity.HIGH, Severity.CRITICAL)

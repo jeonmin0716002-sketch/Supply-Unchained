@@ -50,6 +50,7 @@ RULE_INSTALL_TIME = "custom-install-time-exec"
 RULE_EXFIL = "custom-exfil-endpoint"
 RULE_INSTALL_SPAWN = "custom-install-time-spawn"
 RULE_INDIRECT_NET = "custom-install-time-network-indirect"
+RULE_BENIGN_NET = "custom-install-time-network-benign"
 
 #: detail 에서 "무엇을 했는가"와 "어디서 불렸는가"를 가르는 표식 (version_diff 가 쓴다)
 ORIGIN_MARK = "←"
@@ -177,6 +178,74 @@ def command_head(call: ast.Call, aliases: dict[str, str]) -> str:
     return "?"
 
 
+# ── 정상 통신으로 볼 수 있는 경우 (신규 업로드 실측, docs/eval/watch-new-uploads.md §P1) ──
+
+#: 버전 확인·로컬 서버. 신규 업로드 오탐 rubka(PyPI JSON 으로 최신 버전 확인)·sigmaflow
+#: (자기 PyPI RSS). raw.githubusercontent.com 은 넣지 않았다 — 악성 2단계 페이로드를 두는
+#: 흔한 곳이라(meerschaum 의 typing_extensions 대체 경로 하나를 위해 열기엔 비싸다).
+_BENIGN_HOSTS = frozenset({"pypi.org", "pypi.python.org", "localhost", "127.0.0.1", "::1"})
+
+#: 받기만 하는 호출. 신규 업로드 오탐 ai-edge-litert-sdk-* 9릴리스·chromedriver-binary·
+#: haddock3 가 setup.py 에서 데이터·SDK 를 내려받았고 받은 파일을 실행하지 않았다.
+#: urlopen·requests.get 은 넣지 않았다 — 상수 주소에 GET 만 하는 것도 의존성 혼동 PoC 의
+#: 비콘 형태라(설치한 곳의 IP 가 새어 나간다), "파일로 저장"이 분명한 것만 본다.
+_DOWNLOAD_FUNCS = {"urlretrieve"}
+
+#: 같은 setup.py 범위에 이런 호출이 있으면 "받아서 실행"일 수 있다 — 다운로드도 HIGH 유지
+_RUNNERS_OF_FILES = {"exec", "eval", "compile", "__import__", "startfile", "chmod",
+                     "run_path", "run_module", "load_module", "LoadLibrary", "CDLL", "WinDLL"}
+_PERSIST_TARGET = re.compile(
+    r"startup|start menu|appdata|\.(?:exe|bat|cmd|vbs|scr|ps1|dll|so|dylib)\b", re.IGNORECASE)
+
+
+def _url_arg(call: ast.Call) -> ast.AST | None:
+    if call.args:
+        return call.args[0]
+    return next((k.value for k in call.keywords if k.arg in ("url", "address")), None)
+
+
+def _const_prefix(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[0], ast.Constant):
+        return str(node.values[0].value)
+    if isinstance(node, ast.Tuple) and node.elts:  # socket.create_connection((host, port))
+        return _const_prefix(node.elts[0])
+    return None
+
+
+def _to_benign_host(call: ast.Call) -> bool:
+    from urllib.parse import urlsplit
+
+    prefix = _const_prefix(_url_arg(call))
+    if prefix is None:
+        return False
+    host = (urlsplit(prefix).hostname if "://" in prefix else prefix.split(":")[0]) or ""
+    return host.lower() in _BENIGN_HOSTS
+
+
+def _is_download(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """보내는 것 없이 받기만 하는가. URL 을 f-string·덧셈으로 조립하면(호스트 정보 등을
+    실어 보낼 수 있음) 아니다. 저장 경로가 실행 파일·시작 프로그램 폴더면 아니다."""
+    name = _resolve(call.func, aliases) or ""
+    func = name.rpartition(".")[2]
+    if func not in _DOWNLOAD_FUNCS or len(call.args) > 2 or call.keywords:
+        return False  # urlretrieve(url, filename) — reporthook·data 가 붙으면 보지 않는다
+    if not isinstance(_url_arg(call), (ast.Constant, ast.Name, ast.Attribute)):
+        return False
+    return not any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                   and _PERSIST_TARGET.search(n.value) for n in ast.walk(call))
+
+
+def _runs_files(reached: Iterable[Reached]) -> bool:
+    for r in reached:
+        if isinstance(r.node, ast.Call):
+            name = _resolve(r.node.func, r.module.aliases) or ""
+            if _is_spawn(r.node, r.module.aliases) or name.rpartition(".")[2] in _RUNNERS_OF_FILES:
+                return True
+    return False
+
+
 # ── 실행 범위 ─────────────────────────────────────────────────────
 # 범위 계산 자체는 engine/rules/exec_scope.py — 파일 경계를 넘는 추적(다른 모듈 함수,
 # 인스턴스화, 스레드에 넘긴 함수)의 실측 근거도 그쪽 docstring 에 있다.
@@ -212,7 +281,7 @@ def _seed_module(ctx: FileContext, tree: ast.Module) -> tuple[ModuleIndex, Modul
 # ── 규칙 ──────────────────────────────────────────────────────────
 
 def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
-           *, seed: Module) -> Iterator[StaticFinding]:
+           *, seed: Module, download_ok: bool = False) -> Iterator[StaticFinding]:
     """범위 안의 호출 중 (1) 네트워크 (2) 수상한 명령 실행을 HIGH 로, (3) 그 밖의 프로세스
     실행(평범한 빌드·조사 명령 제외)을 MEDIUM 으로.
 
@@ -250,8 +319,11 @@ def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
             continue
         seen.add(key)
         plain = what.startswith("프로세스 실행")
-        indirect_net = r.indirect and what.startswith("네트워크 호출")
-        if indirect_net:
+        net = what.startswith("네트워크 호출")
+        indirect_net = r.indirect and net
+        if net and (_to_benign_host(node) or (download_ok and _is_download(node, aliases))):
+            rule, cwe, sev = RULE_BENIGN_NET, "CWE-506", Severity.MEDIUM
+        elif indirect_net:
             rule, cwe, sev = RULE_INDIRECT_NET, "CWE-506", Severity.MEDIUM
         elif plain:
             rule, cwe, sev = RULE_INSTALL_SPAWN, "CWE-78", Severity.MEDIUM
@@ -354,17 +426,19 @@ def install_time_exec(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFind
         top_scope.run(seed, list(module_level(tree, include_main=True, definitions=False)))
         top = top_scope.run(seed, list(module_level(tree, include_main=True, statements=False)),
                             indirect=True)
-        yield from _check(_split(top, seed, True), ctx,
-                          "pip install 시 setup.py 가 실행하는", seed=seed)
-        yield from _check(_split(top, seed, False), ctx,
-                          "pip install 시 setup.py 가 불러 실행하는", seed=seed)
         hooks = Scope(index, import_toplevel=True)
         for cls in _hook_classes(tree):
             hooks.run(seed, list(ast.walk(cls)), cls=(seed, cls))
+        # 설치 중 받기만 하고 실행하지 않는 다운로드는 MEDIUM (범위 전체에 실행이 없을 때만)
+        ok = not _runs_files([*top, *hooks.reached])
+        yield from _check(_split(top, seed, True), ctx,
+                          "pip install 시 setup.py 가 실행하는", seed=seed, download_ok=ok)
+        yield from _check(_split(top, seed, False), ctx,
+                          "pip install 시 setup.py 가 불러 실행하는", seed=seed, download_ok=ok)
         yield from _check(_split(hooks.reached, seed, True), ctx,
-                          "pip install 시 설치 훅이 실행하는", seed=seed)
+                          "pip install 시 설치 훅이 실행하는", seed=seed, download_ok=ok)
         yield from _check(_split(hooks.reached, seed, False), ctx,
-                          "pip install 시 setup.py 가 불러 실행하는", seed=seed)
+                          "pip install 시 setup.py 가 불러 실행하는", seed=seed, download_ok=ok)
         return
     if not _is_package_module(ctx):
         return

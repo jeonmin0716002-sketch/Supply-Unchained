@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from engine.rules.code_patterns import RULE_DANGEROUS_CALL, RULE_OBFUSCATED
 from engine.rules.install_hooks import RULE_INSTALL_HOOK, RULE_PTH
 from engine.rules.install_time import (
+    RULE_BENIGN_NET,
     RULE_ENTRYPOINT,
     RULE_EXFIL,
     RULE_INDIRECT_NET,
@@ -59,6 +60,12 @@ RULE_CATALOG: dict[str, RuleInfo] = {
     RULE_INSTALL_TIME: RuleInfo(
         rule_id=RULE_INSTALL_TIME,
         summary="network call or suspicious command run by install-/import-time code",
+        cwes=frozenset({"CWE-506"}),
+    ),
+    RULE_BENIGN_NET: RuleInfo(
+        rule_id=RULE_BENIGN_NET,
+        summary="install-/import-time network call to PyPI/localhost, or a download-only call "
+                "in setup.py with nothing in the install scope that could run the file",
         cwes=frozenset({"CWE-506"}),
     ),
     RULE_INDIRECT_NET: RuleInfo(

