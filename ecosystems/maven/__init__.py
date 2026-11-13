@@ -31,6 +31,8 @@ class MavenEcosystem(Ecosystem):
     registry_label = "Maven Central"
     manifest_filenames = ("pom.xml", "gradle.lockfile", "build.gradle", "build.gradle.kts")
     has_feed = False
+    #: 선택 추출(common.pypi.SCAN_SUFFIXES)에 없는데 규칙이 읽는 파일 — .class 상수 풀, 중첩 jar
+    scan_suffixes = (".class", ".jar", ".war")
 
     # 이름은 ``groupId:artifactId``. 각 부분은 영숫자·'.'·'_'·'-'.
     NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*:[A-Za-z0-9_][A-Za-z0-9._-]*$")

@@ -331,6 +331,8 @@ def is_scan_target(name: str, extra_suffixes: frozenset[str] = frozenset()) -> b
         or suffix in SCAN_SUFFIXES
         or suffix in extra_suffixes
         or base in ENTRYPOINT_BASENAMES
+        # 서비스 로더 항목은 파일명이 인터페이스 전체 이름이라 접미사가 ".Processor" 처럼 보인다
+        or "META-INF/services/" in name
     )
 
 

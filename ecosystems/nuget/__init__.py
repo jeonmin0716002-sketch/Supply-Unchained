@@ -21,6 +21,8 @@ class NuGetEcosystem(Ecosystem):
     registry_label = "NuGet"
     manifest_filenames = ("packages.lock.json", "packages.config", "directory.packages.props")
     has_feed = True
+    #: 선택 추출(common.pypi.SCAN_SUFFIXES)에 없는데 규칙이 읽는 파일 — 관리형 .dll 문자열 테이블
+    scan_suffixes = (".dll",)
 
     # NuGet id: 영숫자·'.'·'_'·'-', 최대 100자. 대소문자 구분 없음.
     NAME_RE = re.compile(r"^[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$")

@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 
 from api.schemas import StaticFinding
-from common.archive import ArchiveError, extract_archive
+from common.archive import ArchiveError, ExtractReport, extract_archive
 from common.pypi import MAX_UNCOMPRESSED_BYTES
 from ecosystems.base import Artifact, Dependency, Ecosystem, Project
 from ecosystems.rubygems import feed as _feed
@@ -71,7 +71,13 @@ class RubyGemsAdapter(Ecosystem):
         바깥 tar 도 안쪽 data.tar.gz 도 common.archive 의 크기·개수·경로 상한을 거친다."""
         dest = Path(dest)
         with tempfile.TemporaryDirectory() as outer_dir:
-            outer = extract_archive(data, "gem.tar", outer_dir, fmt="tar")
+            # 바깥 tar 의 멤버(data.tar.gz·metadata.gz)는 분석 대상 접미사가 아니라 선택 추출이
+            # 건너뛴다 — 통합 시 실측: "has no data.tar.gz". 바깥 추출만 .gz 를 허용하고, 기록은
+            # 따로 둬서 archive_names() 에는 안쪽(실제 gem 내용) 이름만 남게 한다.
+            outer = extract_archive(
+                data, "gem.tar", outer_dir, fmt="tar",
+                report=ExtractReport(extra_suffixes=frozenset({".gz"})),
+            )
             data_tgz = outer / "data.tar.gz"
             meta_gz = outer / "metadata.gz"
             if not data_tgz.is_file():

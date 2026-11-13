@@ -162,6 +162,9 @@ class Ecosystem(ABC):
     manifest_filenames: ClassVar[tuple[str, ...]] = ()
     #: 신규 업로드 피드를 제공하는가 (``fetch_feed``)
     has_feed: ClassVar[bool] = False
+    #: 압축은 선택 추출이다 — ``common.pypi.SCAN_SUFFIXES``·접미사 없는 파일·진입점만 풀린다.
+    #: 규칙이 그 밖의 파일을 읽으면 여기에 접미사를 적는다 (예: maven 의 ``.class``).
+    scan_suffixes: ClassVar[tuple[str, ...]] = ()
 
     #: 이름·버전 화이트리스트. 셸 메타문자·공백·경로 탈출(``..``)을 입구에서 막는다
     #: (api/schemas.py 의 Secure Design 주석 참고). 생태계 문법에 맞게 덮어쓴다.
