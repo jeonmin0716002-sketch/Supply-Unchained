@@ -22,6 +22,7 @@ eval_malware_dataset.py). 아무것도 못 잡은 139개 중 109개는 **setup.p
 from __future__ import annotations
 
 import ast
+import contextlib
 import re
 import tomllib
 from collections.abc import Iterable, Iterator
@@ -43,11 +44,13 @@ from engine.rules.exec_scope import (
     body_nodes,
     module_level,
 )
+from engine.rules.install_hooks import pth_own_imports
 
 RULE_INSTALL_TIME = "custom-install-time-exec"
 RULE_EXFIL = "custom-exfil-endpoint"
 RULE_INSTALL_SPAWN = "custom-install-time-spawn"
 RULE_INDIRECT_NET = "custom-install-time-network-indirect"
+RULE_BENIGN_NET = "custom-install-time-network-benign"
 
 #: detail 에서 "무엇을 했는가"와 "어디서 불렸는가"를 가르는 표식 (version_diff 가 쓴다)
 ORIGIN_MARK = "←"
@@ -175,6 +178,116 @@ def command_head(call: ast.Call, aliases: dict[str, str]) -> str:
     return "?"
 
 
+# ── 정상 통신으로 볼 수 있는 경우 (신규 업로드 실측, docs/eval/watch-new-uploads.md §P1) ──
+
+#: 버전 확인·로컬 서버. 신규 업로드 오탐 rubka(PyPI JSON 으로 최신 버전 확인)·sigmaflow
+#: (자기 PyPI RSS). raw.githubusercontent.com 은 넣지 않았다 — 악성 2단계 페이로드를 두는
+#: 흔한 곳이라(meerschaum 의 typing_extensions 대체 경로 하나를 위해 열기엔 비싸다).
+_BENIGN_HOSTS = frozenset({"pypi.org", "pypi.python.org", "localhost", "127.0.0.1", "::1"})
+
+#: 받기만 하는 호출. 신규 업로드 오탐 ai-edge-litert-sdk-* 9릴리스·chromedriver-binary·
+#: haddock3 가 setup.py 에서 데이터·SDK 를 내려받았고 받은 파일을 실행하지 않았다.
+#: urlopen·requests.get 은 넣지 않았다 — 상수 주소에 GET 만 하는 것도 의존성 혼동 PoC 의
+#: 비콘 형태라(설치한 곳의 IP 가 새어 나간다), "파일로 저장"이 분명한 것만 본다.
+_DOWNLOAD_FUNCS = {"urlretrieve"}
+
+#: 같은 setup.py 범위에 이런 호출이 있으면 "받아서 실행"일 수 있다 — 다운로드도 HIGH 유지
+_RUNNERS_OF_FILES = {"exec", "eval", "compile", "__import__", "startfile", "chmod",
+                     "run_path", "run_module", "load_module", "LoadLibrary", "CDLL", "WinDLL"}
+_PERSIST_TARGET = re.compile(
+    r"startup|start menu|appdata|\.(?:exe|bat|cmd|vbs|scr|ps1|dll|so|dylib)\b", re.IGNORECASE)
+
+
+def _url_arg(call: ast.Call) -> ast.AST | None:
+    if call.args:
+        return call.args[0]
+    return next((k.value for k in call.keywords if k.arg in ("url", "address")), None)
+
+
+def _const_prefix(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[0], ast.Constant):
+        return str(node.values[0].value)
+    if isinstance(node, ast.Tuple) and node.elts:  # socket.create_connection((host, port))
+        return _const_prefix(node.elts[0])
+    return None
+
+
+def _host_of(prefix: str) -> str:
+    from urllib.parse import urlsplit
+
+    return ((urlsplit(prefix).hostname if "://" in prefix else prefix.split(":")[0]) or "").lower()
+
+
+def _to_benign_host(call: ast.Call, mod: Module | None = None) -> bool:
+    """목적지가 PyPI·localhost 상수 주소인가. URL 이 이름이면 같은 모듈의 그 이름에 대한
+    **모든** 대입이 그런 주소여야 한다 (실측: rubka 의 ``url = f"https://pypi.org/..."``,
+    sigmaflow 의 ``pkg_url = "https://pypi.org/rss/..."`` — 지역 변수를 거친다)."""
+    arg = _url_arg(call)
+    if isinstance(arg, ast.Name) and mod is not None:
+        values = [n.value for n in ast.walk(mod.tree) if isinstance(n, ast.Assign)
+                  for t in n.targets if isinstance(t, ast.Name) and t.id == arg.id]
+        prefixes = [_const_prefix(v) for v in values]
+        return bool(prefixes) and all(p is not None and _host_of(p) in _BENIGN_HOSTS
+                                      for p in prefixes)
+    prefix = _const_prefix(arg)
+    return prefix is not None and _host_of(prefix) in _BENIGN_HOSTS
+
+
+def _url_guarded(call: ast.Call, mod: Module) -> bool:
+    """"URL 이면 받고 아니면 파일을 연다" 도우미 안의 호출인가 — 같은 변수를
+    ``x.startswith(("http://", ...))`` 로 검사한 if 분기 안에서 그 변수를 URL 로 쓴다.
+    실측 오탐: matplotlib 3.11.2 ``_open_file_or_url`` (rcParams 로드가 import 시 거치지만
+    로컬 rc 파일이면 열기만 한다). 악성 코드가 자기 주소의 스킴을 검사할 이유는 없다."""
+    arg = _url_arg(call)
+    if not isinstance(arg, ast.Name):
+        return False
+    guarded = getattr(mod, "_su_url_guarded", None)
+    if guarded is None:
+        guarded = set()
+        for node in ast.walk(mod.tree):
+            if not isinstance(node, ast.If):
+                continue
+            checked = {
+                c.func.value.id for c in ast.walk(node.test)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == "startswith" and isinstance(c.func.value, ast.Name)
+                and any(isinstance(k, ast.Constant) and isinstance(k.value, str)
+                        and "://" in k.value for k in ast.walk(c))
+            }
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, ast.Call):
+                        a = _url_arg(sub)
+                        if isinstance(a, ast.Name) and a.id in checked:
+                            guarded.add(id(sub))
+        mod._su_url_guarded = guarded  # type: ignore[attr-defined]
+    return id(call) in guarded
+
+
+def _is_download(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """보내는 것 없이 받기만 하는가. URL 을 f-string·덧셈으로 조립하면(호스트 정보 등을
+    실어 보낼 수 있음) 아니다. 저장 경로가 실행 파일·시작 프로그램 폴더면 아니다."""
+    name = _resolve(call.func, aliases) or ""
+    func = name.rpartition(".")[2]
+    if func not in _DOWNLOAD_FUNCS or len(call.args) > 2 or call.keywords:
+        return False  # urlretrieve(url, filename) — reporthook·data 가 붙으면 보지 않는다
+    if not isinstance(_url_arg(call), (ast.Constant, ast.Name, ast.Attribute)):
+        return False
+    return not any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                   and _PERSIST_TARGET.search(n.value) for n in ast.walk(call))
+
+
+def _runs_files(reached: Iterable[Reached]) -> bool:
+    for r in reached:
+        if isinstance(r.node, ast.Call):
+            name = _resolve(r.node.func, r.module.aliases) or ""
+            if _is_spawn(r.node, r.module.aliases) or name.rpartition(".")[2] in _RUNNERS_OF_FILES:
+                return True
+    return False
+
+
 # ── 실행 범위 ─────────────────────────────────────────────────────
 # 범위 계산 자체는 engine/rules/exec_scope.py — 파일 경계를 넘는 추적(다른 모듈 함수,
 # 인스턴스화, 스레드에 넘긴 함수)의 실측 근거도 그쪽 docstring 에 있다.
@@ -210,7 +323,7 @@ def _seed_module(ctx: FileContext, tree: ast.Module) -> tuple[ModuleIndex, Modul
 # ── 규칙 ──────────────────────────────────────────────────────────
 
 def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
-           *, seed: Module) -> Iterator[StaticFinding]:
+           *, seed: Module, download_ok: bool = False) -> Iterator[StaticFinding]:
     """범위 안의 호출 중 (1) 네트워크 (2) 수상한 명령 실행을 HIGH 로, (3) 그 밖의 프로세스
     실행(평범한 빌드·조사 명령 제외)을 MEDIUM 으로.
 
@@ -248,8 +361,12 @@ def _check(reached: Iterable[Reached], ctx: FileContext, when: str,
             continue
         seen.add(key)
         plain = what.startswith("프로세스 실행")
-        indirect_net = r.indirect and what.startswith("네트워크 호출")
-        if indirect_net:
+        net = what.startswith("네트워크 호출")
+        indirect_net = r.indirect and net
+        if net and (_to_benign_host(node, r.module) or _url_guarded(node, r.module)
+                    or (download_ok and _is_download(node, aliases))):
+            rule, cwe, sev = RULE_BENIGN_NET, "CWE-506", Severity.MEDIUM
+        elif indirect_net:
             rule, cwe, sev = RULE_INDIRECT_NET, "CWE-506", Severity.MEDIUM
         elif plain:
             rule, cwe, sev = RULE_INSTALL_SPAWN, "CWE-78", Severity.MEDIUM
@@ -304,6 +421,25 @@ def _is_test_file(rel: PurePosixPath) -> bool:
     return any(part in ("test", "tests") or part.endswith("_tests") for part in rel.parts[:-1])
 
 
+def _pth_imported(ctx: FileContext) -> frozenset[str]:
+    """트리 안의 모든 .pth 가 import 하는 최상위 모듈 이름 (트리마다 한 번 계산)."""
+    if ctx.tree is None:
+        return frozenset()
+    cached = getattr(ctx.tree, "_su_pth_imports", None)
+    if cached is not None:
+        return cached
+    names: set[str] = set()
+    for f in ctx.tree.files():
+        if f.endswith(".pth"):
+            for line in (ctx.tree.read(f) or "").splitlines():
+                if line.strip().startswith(("import ", "import	")):
+                    names.update(pth_own_imports(line.strip()) or [])
+    out = frozenset(names)
+    with contextlib.suppress(AttributeError):
+        ctx.tree._su_pth_imports = out  # type: ignore[attr-defined]
+    return out
+
+
 def _is_package_module(ctx: FileContext) -> bool:
     """누군가 import 할 코드인가 — 패키지 디렉터리(__init__.py 있음) 안이거나 sdist 최상위
     단일 모듈. ``scripts/``·``tools/``·``other/`` 의 보조 스크립트는 import 되지 않는다
@@ -317,6 +453,10 @@ def _is_package_module(ctx: FileContext) -> bool:
         return True
     if ctx.tree is not None and ctx.tree.read((rel.parent / "__init__.py").as_posix()) is not None:
         return True
+    # .pth 가 import 하는 모듈 — 인터프리터가 뜰 때마다 실행된다 (휠 루트의 단일 모듈은
+    # __init__.py 도 옆 setup.py 도 없다). custom-pth 가 이 경우를 MEDIUM 으로 낮추는 전제다.
+    if rel.stem in _pth_imported(ctx):
+        return True
     # sdist 최상위(이름-버전/모듈.py) 의 단일 모듈 — setup.py 가 옆에 있으면 py_modules 다
     return ctx.tree is not None and ctx.tree.read((rel.parent / "setup.py").as_posix()) is not None
 
@@ -329,17 +469,19 @@ def install_time_exec(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFind
         top_scope.run(seed, list(module_level(tree, include_main=True, definitions=False)))
         top = top_scope.run(seed, list(module_level(tree, include_main=True, statements=False)),
                             indirect=True)
-        yield from _check(_split(top, seed, True), ctx,
-                          "pip install 시 setup.py 가 실행하는", seed=seed)
-        yield from _check(_split(top, seed, False), ctx,
-                          "pip install 시 setup.py 가 불러 실행하는", seed=seed)
         hooks = Scope(index, import_toplevel=True)
         for cls in _hook_classes(tree):
             hooks.run(seed, list(ast.walk(cls)), cls=(seed, cls))
+        # 설치 중 받기만 하고 실행하지 않는 다운로드는 MEDIUM (범위 전체에 실행이 없을 때만)
+        ok = not _runs_files([*top, *hooks.reached])
+        yield from _check(_split(top, seed, True), ctx,
+                          "pip install 시 setup.py 가 실행하는", seed=seed, download_ok=ok)
+        yield from _check(_split(top, seed, False), ctx,
+                          "pip install 시 setup.py 가 불러 실행하는", seed=seed, download_ok=ok)
         yield from _check(_split(hooks.reached, seed, True), ctx,
-                          "pip install 시 설치 훅이 실행하는", seed=seed)
+                          "pip install 시 설치 훅이 실행하는", seed=seed, download_ok=ok)
         yield from _check(_split(hooks.reached, seed, False), ctx,
-                          "pip install 시 setup.py 가 불러 실행하는", seed=seed)
+                          "pip install 시 setup.py 가 불러 실행하는", seed=seed, download_ok=ok)
         return
     if not _is_package_module(ctx):
         return
@@ -376,9 +518,13 @@ def exfil_endpoint(ctx: FileContext, tree: ast.Module) -> Iterable[StaticFinding
 # ── 콘솔 스크립트 진입점 ──────────────────────────────────────────
 # [project.scripts]·setup(entry_points=...)·entry_points.txt 의 함수는 사용자가 명령을
 # **직접 실행할 때** 돈다. CLI 가 네트워크를 쓰는 건 정상이라(다운로더·API 클라이언트)
-# 네트워크 호출은 보지 않는다. 수상한 명령 실행(숨김 PowerShell, curl|sh 등)만 HIGH 다 —
-# import 시점 규칙과 같은 토큰 목록이고, 정상 상위 300개에서 이 조합이 나온 패키지 수는
-# docs/eval/py-engine.md 에 있다.
+# 네트워크 호출은 보지 않는다. 수상한 명령 실행(숨김 PowerShell, curl|sh 등)만 남긴다.
+#
+# 처음엔 HIGH 였다가 MEDIUM 으로 내렸다 (docs/eval/py-engine.md §7). 실제 악성 900개
+# (튜닝·held-out·최종)와 탈취 29개에서 이 규칙으로 새로 잡은 것은 0개였고, 신규 업로드
+# 무작위 500개 표본에서는 차단을 3 → 5건(0.6 → 1.0%)으로 늘렸다 — seleniumbase·trqsh·
+# squidbrake 의 정상 PowerShell 호출, pyft8 GUI 의 CREATE_NO_WINDOW, pigeon-home-runner
+# 설치 마법사의 crontab 등록. CLI 는 사용자가 실행하는 도구라 이런 명령이 정상이다.
 
 RULE_ENTRYPOINT = "custom-entrypoint-exec"
 
@@ -483,7 +629,7 @@ def entrypoint_exec(ctx: FileContext) -> Iterable[StaticFinding]:
             seen.add((r.module.relpath, node.lineno))
             what = f"수상한 명령 실행 {_resolve(node.func, r.module.aliases)}() — '{token}'"
             yield make_finding(
-                rule=RULE_ENTRYPOINT, cwe="CWE-506", severity=Severity.HIGH,
+                rule=RULE_ENTRYPOINT, cwe="CWE-506", severity=Severity.MEDIUM,
                 ctx=_ctx_for(r.module, ctx), line=node.lineno,
                 detail=f"콘솔 명령 {modname}:{attr} 실행 시 {what} {ORIGIN_MARK} {ctx.relpath}",
             )

